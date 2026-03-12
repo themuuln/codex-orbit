@@ -40,6 +40,13 @@ Direct install:
 curl -fsSL https://raw.githubusercontent.com/themuuln/codex-orbit/main/install.sh | sh
 ```
 
+The direct installer defaults to the latest tagged release. To install a branch or a specific tag instead:
+
+```zsh
+curl -fsSL https://raw.githubusercontent.com/themuuln/codex-orbit/main/install.sh | CODEX_ORBIT_INSTALL_REF=main sh
+curl -fsSL https://raw.githubusercontent.com/themuuln/codex-orbit/main/install.sh | CODEX_ORBIT_INSTALL_REF=v0.1.0 sh
+```
+
 Local checkout install:
 
 ```zsh
@@ -178,6 +185,20 @@ cx cooldown
 cx cooldown clear acct_002
 ```
 
+## Uninstall
+
+Homebrew install:
+
+```zsh
+brew uninstall codex-orbit
+```
+
+Direct install:
+
+```zsh
+./uninstall.sh
+```
+
 ## Data Layout
 
 `codex-orbit` stores state under:
@@ -208,6 +229,7 @@ Each account home gets its own:
 
 - Homebrew installs the `cx` command only. You do not need to add any `source ...` line to your shell profile for normal usage.
 - The direct installer places files under `~/.local/share/codex-orbit/` and links `cx` into `~/.local/bin/` by default.
+- The direct installer fetches the latest tagged release by default. Set `CODEX_ORBIT_INSTALL_REF=main` if you explicitly want the current branch head instead.
 - `cx list` reads masked email, plan, default workspace, and workspace count from the saved `id_token` when `python3` is available.
 - `cx warmup` is manual only. It sends a minimal non-interactive prompt to the selected account to deliberately start that account's current 5h window.
 - `cx warmup` skips the post-run quota refresh by default for speed. Use `cx warmup --show-quota` if you want it immediately.
@@ -222,4 +244,4 @@ Each account home gets its own:
 
 ## License
 
-Private for now. Add a license before broad public distribution.
+MIT. See [LICENSE](/Users/ict/codex-orbit/LICENSE).

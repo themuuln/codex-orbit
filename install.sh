@@ -3,7 +3,6 @@ set -eu
 
 REPO_OWNER="themuuln"
 REPO_NAME="codex-orbit"
-DEFAULT_REF="${CODEX_ORBIT_INSTALL_REF:-main}"
 
 say() {
   printf '%s\n' "$*"
@@ -19,7 +18,7 @@ usage() {
 Usage: install.sh [--ref <git-ref>] [--bin-dir <dir>] [--install-dir <dir>] [--force]
 
 Options:
-  --ref <git-ref>         Git branch or tag to install. Default: main
+  --ref <git-ref>         Git branch or tag to install. Default: latest tagged release
   --bin-dir <dir>         Where the cx symlink should be placed.
   --install-dir <dir>     Where codex-orbit files should live.
   --force                 Replace an existing cx symlink or binary.
@@ -87,6 +86,18 @@ download_source() {
   printf '%s\n' "$1"
 }
 
+resolve_latest_release_ref() {
+  api_url="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest"
+  release_json="$(curl -fsSL "$api_url" 2>/dev/null || true)"
+  tag="$(printf '%s' "$release_json" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+
+  if [ -n "$tag" ]; then
+    printf '%s\n' "$tag"
+  else
+    printf 'main\n'
+  fi
+}
+
 cleanup() {
   set +e
   for path in $tmp_paths; do
@@ -94,7 +105,7 @@ cleanup() {
   done
 }
 
-ref="$DEFAULT_REF"
+ref="${CODEX_ORBIT_INSTALL_REF:-}"
 bin_dir="$(default_bin_dir)"
 install_dir="$(default_install_dir)"
 force=0
@@ -137,6 +148,9 @@ script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 if [ -f "$script_dir/bin/cx" ] && [ -f "$script_dir/libexec/codex-orbit.zsh" ]; then
   source_dir="$script_dir"
 else
+  if [ -z "$ref" ]; then
+    ref="$(resolve_latest_release_ref)"
+  fi
   source_dir="$(download_source "$ref")"
 fi
 

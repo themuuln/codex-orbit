@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install system dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep zsh
+
+      - name: Install system dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          command -v rg >/dev/null 2>&1 || brew install ripgrep
+
+      - name: Validate shell and Python files
+        run: |
+          zsh -n bin/cx libexec/codex-orbit.zsh codex-orbit.zsh
+          sh -n install.sh uninstall.sh scripts/build-release-archive.sh
+          python3 -m py_compile libexec/codex-orbit-launch.py libexec/codex-orbit-quota.py scripts/render-homebrew-formula.py
+
+      - name: Repo-local smoke test
+        run: |
+          ./bin/cx --help >/dev/null
+          zsh -c 'source ./codex-orbit.zsh && cx --help >/dev/null'
+
+      - name: Direct install smoke test
+        run: |
+          temp_home="$(mktemp -d)"
+          HOME="$temp_home" ./install.sh --bin-dir "$temp_home/bin" --install-dir "$temp_home/share/codex-orbit"
+          "$temp_home/bin/cx" --help >/dev/null
+          HOME="$temp_home" ./uninstall.sh --bin-dir "$temp_home/bin" --install-dir "$temp_home/share/codex-orbit"
+          test ! -e "$temp_home/bin/cx"
+
+  homebrew:
+    name: Homebrew (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@main
+
+      - name: Build source archive
+        run: |
+          eval "$(./scripts/build-release-archive.sh "$RUNNER_TEMP/dist")"
+          python3 ./scripts/render-homebrew-formula.py \
+            --url "file://${ARCHIVE_PATH}" \
+            --sha256 "${ARCHIVE_SHA256}" \
+            --output "$RUNNER_TEMP/codex-orbit.rb"
+
+      - name: Install local formula
+        run: |
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install --formula "$RUNNER_TEMP/codex-orbit.rb"
+          cx --help >/dev/null
+
+      - name: Test local formula
+        run: HOMEBREW_NO_AUTO_UPDATE=1 brew test codex-orbit

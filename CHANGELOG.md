@@ -1,5 +1,9 @@
 ## [2026-03-12]
 
+- Added `MIT` licensing and removed the remaining “private for now” release blocker.
+- Added `uninstall.sh` for non-Homebrew installs.
+- Changed the curl installer to prefer the latest tagged release by default, with `CODEX_ORBIT_INSTALL_REF` override support.
+- Added reusable release scripts and GitHub Actions for macOS/Linux validation, Homebrew install checks, and automated tag-to-release plus tap publishing.
 - Added a real `install.sh` so users can install `cx` without hardcoded local paths.
 - Fixed wrapper path resolution so packaged and Homebrew installs can find `libexec` correctly through symlinks.
 - Restored a root `codex-orbit.zsh` shim for backward-compatible shell sourcing.
