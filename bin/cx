@@ -1,0 +1,7 @@
+#!/usr/bin/env zsh
+set -euo pipefail
+SCRIPT_PATH=${0:P}
+SCRIPT_DIR=${SCRIPT_PATH:h}
+: "${CODEX_ORBIT_LIBEXEC_DIR:=$SCRIPT_DIR/../libexec}"
+source "$CODEX_ORBIT_LIBEXEC_DIR/codex-orbit.zsh"
+cx "$@"
