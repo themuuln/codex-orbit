@@ -1,3 +1,8 @@
+## [2026-03-13]
+
+- Improved `cx quota` list output with fixed-width square meters for the 5-hour and weekly windows.
+- Aligned the all-accounts quota view into stable columns so remaining capacity, reset times, and source are easier to scan.
+
 ## [2026-03-12]
 
 - Added `MIT` licensing and removed the remaining “private for now” release blocker.

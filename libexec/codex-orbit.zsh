@@ -369,6 +369,61 @@ _codex_quota_bar() {
     "$(_codex_repeat_char ' ' "$empty")"
 }
 
+_codex_quota_box_bar() {
+  local remaining="${1:-0}"
+  local width="${2:-10}"
+  local filled empty
+  local full_box=$'\u25a0'
+  local empty_box=$'\u25a1'
+
+  (( remaining < 0 )) && remaining=0
+  (( remaining > 100 )) && remaining=100
+
+  filled=$(( (remaining * width + 50) / 100 ))
+  (( filled > width )) && filled=$width
+  empty=$(( width - filled ))
+
+  printf '%s%s' \
+    "$(_codex_repeat_char "$full_box" "$filled")" \
+    "$(_codex_repeat_char "$empty_box" "$empty")"
+}
+
+_codex_quota_remaining_value() {
+  local remaining="${1:-}"
+  local used="${2:-}"
+  local value=""
+
+  if [[ -n "$remaining" ]]; then
+    value="$remaining"
+  elif [[ -n "$used" ]]; then
+    value=$((100 - used))
+  else
+    return 1
+  fi
+
+  (( value < 0 )) && value=0
+  (( value > 100 )) && value=100
+  printf '%s\n' "$value"
+}
+
+_codex_quota_list_segment() {
+  local label="$1"
+  local remaining="${2:-}"
+  local used="${3:-}"
+  local reset_at="${4:-}"
+  local value="" meter="" pct="" reset_display="-"
+
+  if ! value="$(_codex_quota_remaining_value "$remaining" "$used" 2>/dev/null)"; then
+    printf '%-6s %s %4s  %-19s' "$label" "$(_codex_quota_box_bar 0 10)" "-" "-"
+    return 0
+  fi
+
+  meter="$(_codex_quota_box_bar "$value" 10)"
+  pct="${value}%"
+  [[ -n "$reset_at" ]] && reset_display="$(_codex_format_timestamp "$reset_at")"
+  printf '%-6s %s %4s  %-19s' "$label" "$meter" "$pct" "$reset_display"
+}
+
 _codex_print_quota_meter_line() {
   local label="$1"
   local remaining="$2"
@@ -444,8 +499,7 @@ _codex_print_quota_brief() {
   local source="" email="" plan="" credits_balance="" credits_has="" credits_unlimited=""
   local primary_used="" primary_remaining="" primary_reset="" primary_window=""
   local secondary_used="" secondary_remaining="" secondary_reset="" secondary_window=""
-  local -a parts=()
-  local part=""
+  local primary_segment="" secondary_segment="" credits_display="-"
 
   [[ -n "$snapshot" ]] || return 1
 
@@ -465,21 +519,21 @@ _codex_print_quota_brief() {
     secondary_reset \
     secondary_window <<<"$snapshot"
 
-  part="$(_codex_quota_window_summary "$(_codex_quota_window_label "$primary_window")" "$primary_remaining" "$primary_used" "$primary_reset" 2>/dev/null || true)"
-  [[ -n "$part" ]] && parts+=("$part")
-  part="$(_codex_quota_window_summary "$(_codex_quota_window_label "$secondary_window")" "$secondary_remaining" "$secondary_used" "$secondary_reset" 2>/dev/null || true)"
-  [[ -n "$part" ]] && parts+=("$part")
-
   if [[ "$credits_unlimited" == "1" ]]; then
-    parts+=("credits unlimited")
+    credits_display="unlimited"
   elif [[ "$credits_has" == "1" && -n "$credits_balance" ]]; then
-    parts+=("credits $credits_balance")
+    credits_display="$credits_balance"
   fi
 
-  [[ -n "$source" ]] && parts+=("source $source")
+  primary_segment="$(_codex_quota_list_segment "$(_codex_quota_window_label "$primary_window")" "$primary_remaining" "$primary_used" "$primary_reset" 2>/dev/null || true)"
+  secondary_segment="$(_codex_quota_list_segment "$(_codex_quota_window_label "$secondary_window")" "$secondary_remaining" "$secondary_used" "$secondary_reset" 2>/dev/null || true)"
 
-  (( ${#parts[@]} > 0 )) || return 1
-  printf '%s\n' "${(j: | :)parts}"
+  [[ -n "$primary_segment" || -n "$secondary_segment" || -n "$source" || "$credits_display" != "-" ]] || return 1
+  printf '%s  %s  %-8s  %s\n' \
+    "$primary_segment" \
+    "$secondary_segment" \
+    "${source:-unknown}" \
+    "$credits_display"
 }
 
 _codex_account_metadata() {
@@ -1784,19 +1838,26 @@ EOF
     fi
 
     if [[ -n "$(_codex_logged_in_accounts)" ]]; then
-      while IFS= read -r acct; do
+      local -a accounts=("${(@f)$(_codex_logged_in_accounts)}")
+      local account_width=7
+
+      for acct in "${accounts[@]}"; do
+        (( ${#acct} > account_width )) && account_width=${#acct}
+      done
+
+      for acct in "${accounts[@]}"; do
         [[ -n "$acct" ]] || continue
         if ! quota_snapshot="$(_codex_account_quota_snapshot "$acct" tsv 2>/dev/null)"; then
-          printf '%s\tquota unavailable\n' "$acct"
+          printf '%-*s  quota unavailable\n' "$account_width" "$acct"
           continue
         fi
         quota_brief="$(_codex_print_quota_brief "$quota_snapshot" 2>/dev/null || true)"
         if [[ -n "$quota_brief" ]]; then
-          printf '%s\t%s\n' "$acct" "$quota_brief"
+          printf '%-*s  %s\n' "$account_width" "$acct" "$quota_brief"
         else
-          printf '%s\tquota available\n' "$acct"
+          printf '%-*s  quota available\n' "$account_width" "$acct"
         fi
-      done < <(_codex_logged_in_accounts)
+      done
       return 0
     fi
 
