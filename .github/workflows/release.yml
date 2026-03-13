@@ -78,20 +78,21 @@ jobs:
             --sha256 "${{ steps.build.outputs.sha256 }}" \
             --output "$RUNNER_TEMP/codex-orbit.rb"
 
+      - name: Validate tap token
+        env:
+          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: |
+          if [ -z "$TAP_GITHUB_TOKEN" ]; then
+            echo "TAP_GITHUB_TOKEN is required to publish themuuln/homebrew-tap." >&2
+            exit 1
+          fi
+
       - name: Checkout tap repository
-        if: ${{ secrets.TAP_GITHUB_TOKEN != '' }}
         uses: actions/checkout@v5
         with:
           repository: themuuln/homebrew-tap
           path: homebrew-tap
           token: ${{ secrets.TAP_GITHUB_TOKEN }}
-
-      - name: Validate tap token
-        run: |
-          if [ -z "${{ secrets.TAP_GITHUB_TOKEN }}" ]; then
-            echo "TAP_GITHUB_TOKEN is required to publish themuuln/homebrew-tap." >&2
-            exit 1
-          fi
 
       - name: Update tap formula
         env:
