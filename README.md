@@ -108,6 +108,7 @@ cx
 - `cx status`: show login status for all discovered account slots
 - `cx warmup`: send a minimal prompt to start the selected account's current 5h window
 - `cx quota`: fetch live quota for one or all saved accounts
+  Supports `--refresh` and `--source oauth|auto|rpc|status`
 - `cx list`: open an interactive account browser in a TTY, or print saved accounts in non-interactive use
 - `cx list --plain`: print only account slot names for scripts
 - `cx list --verbose`: include workspace list, auth mode, and short account id
@@ -150,6 +151,8 @@ cx warmup acct_001
 cx warmup --show-quota
 cx quota
 cx quota acct_001
+cx quota acct_001 --refresh
+cx quota --source auto
 cx which
 cx resolve
 ```
@@ -245,6 +248,7 @@ Shared across all accounts:
 - `cx list` in a terminal opens an interactive menu. Select an account, then choose one of four actions: launch, replace login, disable/enable, or delete. After an action completes, the account list stays open until you cancel it.
 - Disabled accounts stay on disk but are skipped by round robin and by pinned-account resolution until re-enabled.
 - `cx quota` uses the same sources CodexBar does: `auth.json` -> `https://chatgpt.com/backend-api/wham/usage`, then `codex app-server`, then `/status` as a last fallback.
+- `cx quota` defaults to the fast `oauth` source. Use `cx quota --source auto` when you want the old fallback chain, or `--source rpc` / `--source status` for debugging.
 - `cx quota` caches TSV snapshots for 30 seconds by default so repeated checks are fast. Set `CODEX_ORBIT_QUOTA_CACHE_TTL_SECONDS=0` to disable that cache, or set a different TTL in seconds.
 - On first run after upgrading, `codex-orbit` migrates existing per-account sessions into `~/.codex-accounts/.shared/` and replaces the per-account copies with symlinks.
 - One email can belong to multiple workspaces, so `cx list` shows the default workspace plus `(+N)` when more are available. Use `cx list --verbose` to see the full workspace title list.

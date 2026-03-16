@@ -299,7 +299,8 @@ _codex_quota_cache_dir() {
 
 _codex_quota_cache_file() {
   local acct="$1"
-  printf '%s/%s.tsv\n' "$(_codex_quota_cache_dir)" "$acct"
+  local source="${2:-auto}"
+  printf '%s/%s.%s.tsv\n' "$(_codex_quota_cache_dir)" "$acct" "$source"
 }
 
 _codex_file_mtime() {
@@ -320,7 +321,8 @@ _codex_quota_cache_ttl() {
 _codex_read_cached_quota_snapshot() {
   local acct="$1"
   local ttl="${2:-0}"
-  local cache_file="$(_codex_quota_cache_file "$acct")"
+  local source="${3:-auto}"
+  local cache_file="$(_codex_quota_cache_file "$acct" "$source")"
   local cache_mtime="" now_epoch=""
 
   (( ttl > 0 )) || return 1
@@ -333,9 +335,10 @@ _codex_read_cached_quota_snapshot() {
 
 _codex_write_cached_quota_snapshot() {
   local acct="$1"
-  local snapshot="$2"
+  local source="${2:-auto}"
+  local snapshot="$3"
   local cache_dir="$(_codex_quota_cache_dir)"
-  local cache_file="$(_codex_quota_cache_file "$acct")"
+  local cache_file="$(_codex_quota_cache_file "$acct" "$source")"
   local temp_file=""
 
   mkdir -p "$cache_dir"
@@ -344,16 +347,34 @@ _codex_write_cached_quota_snapshot() {
   mv "$temp_file" "$cache_file"
 }
 
+_codex_quota_default_source() {
+  local source="${1:-${CODEX_ORBIT_QUOTA_SOURCE:-oauth}}"
+
+  case "$source" in
+    oauth|auto|rpc|status) printf '%s\n' "$source" ;;
+    *) printf 'oauth\n' ;;
+  esac
+}
+
+_codex_quota_source_is_valid() {
+  case "${1:-}" in
+    oauth|auto|rpc|status) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 _codex_account_quota_snapshot() {
   local acct="$1"
   local format="${2:-tsv}"
+  local refresh="${3:-0}"
+  local source="${4:-auto}"
   local py script result="" cache_ttl=0
 
   _codex_ensure_account_config "$acct" || return 1
 
-  if [[ "$format" == "tsv" ]]; then
+  if [[ "$format" == "tsv" && "$refresh" != "1" ]]; then
     cache_ttl="$(_codex_quota_cache_ttl)"
-    if result="$(_codex_read_cached_quota_snapshot "$acct" "$cache_ttl" 2>/dev/null)"; then
+    if result="$(_codex_read_cached_quota_snapshot "$acct" "$cache_ttl" "$source" 2>/dev/null)"; then
       printf '%s\n' "$result"
       return 0
     fi
@@ -365,10 +386,11 @@ _codex_account_quota_snapshot() {
 
   result="$("$py" "$script" snapshot \
     --account-dir "$(_codex_account_dir "$acct")" \
-    --format "$format")" || return 1
+    --format "$format" \
+    --source "$source")" || return 1
 
   if [[ "$format" == "tsv" && -n "$result" ]]; then
-    _codex_write_cached_quota_snapshot "$acct" "$result" || true
+    _codex_write_cached_quota_snapshot "$acct" "$source" "$result" || true
   fi
 
   printf '%s\n' "$result"
@@ -425,15 +447,16 @@ _codex_warmup_account() {
 
 _codex_quota_window_pretty_label() {
   local seconds="${1:-}"
+  local bullet=$'\u25a0'
 
   case "$seconds" in
-    18000) printf '5h limit\n' ;;
-    604800) printf 'Weekly limit\n' ;;
+    18000) printf '%s 5h limit\n' "$bullet" ;;
+    604800) printf '%s Weekly limit\n' "$bullet" ;;
     *)
       if [[ -z "$seconds" ]]; then
-        printf 'Quota\n'
+        printf '%s Quota\n' "$bullet"
       else
-        printf '%ss limit\n' "$seconds"
+        printf '%s %ss limit\n' "$bullet" "$seconds"
       fi
       ;;
   esac
@@ -550,18 +573,65 @@ _codex_quota_left_value() {
   printf '%s\n' "$value"
 }
 
+_codex_repeat_char() {
+  local char="$1"
+  local count="${2:-0}"
+  local out=""
+  local i
+
+  for (( i = 0; i < count; i++ )); do
+    out+="$char"
+  done
+
+  printf '%s' "$out"
+}
+
+_codex_quota_box_bar() {
+  local remaining="${1:-0}"
+  local width="${2:-10}"
+  local filled=0 empty=0
+  local full_box=$'\u25a0'
+  local empty_box=$'\u25a1'
+
+  (( remaining < 0 )) && remaining=0
+  (( remaining > 100 )) && remaining=100
+
+  filled=$(( (remaining * width + 50) / 100 ))
+  (( filled > width )) && filled=$width
+  empty=$(( width - filled ))
+
+  printf '%s%s' \
+    "$(_codex_repeat_char "$full_box" "$filled")" \
+    "$(_codex_repeat_char "$empty_box" "$empty")"
+}
+
+_codex_quota_meter_cell() {
+  local remaining="${1:-}"
+  local used="${2:-}"
+  local value=""
+
+  if ! value="$(_codex_quota_left_value "$remaining" "$used" 2>/dev/null)"; then
+    printf '%s\n' "-"
+    return 0
+  fi
+
+  printf '%s %s%%\n' "$(_codex_quota_box_bar "$value" 10)" "$value"
+}
+
 _codex_print_quota_meter_line() {
   local label="$1"
   local remaining="$2"
   local reset_at="${3:-}"
   local show_reset="${4:-0}"
   local note=""
+  local meter=""
 
   if [[ -n "$reset_at" && "$show_reset" == "1" ]]; then
     note=" (resets $(_codex_format_timestamp_compact "$reset_at"))"
   fi
 
-  printf '%-14s %s%% left%s\n' "${label}:" "$remaining" "$note"
+  meter="$(_codex_quota_meter_cell "$remaining" "")"
+  printf '%-14s %s left%s\n' "${label}:" "$meter" "$note"
 }
 
 _codex_print_quota_meter() {
@@ -1325,7 +1395,7 @@ Usage: cx [codex args...]
        cx doctor
        cx which
        cx warmup [account] [--show-quota]
-       cx quota [account] [--json]
+       cx quota [account] [--json] [--refresh] [--source oauth|auto|rpc|status]
        cx resolve
        cx cooldown
        cx cooldown <account> <duration>
@@ -1345,7 +1415,7 @@ Commands:
   cx doctor            Validate dependencies, state paths, and account health.
   cx which             Explain which account would launch next.
   cx warmup            Send a minimal prompt to start the selected account's current 5h window.
-  cx quota             Fetch live Codex quota using the same API/RPC path CodexBar uses.
+  cx quota             Fetch live Codex quota. Defaults to the fast OAuth path unless overridden.
   cx resolve           Print only the account that would launch next.
   cx cooldown          List active cooldowns.
   cx cooldown <acct>   Put an account on cooldown using durations like 30m, 5h, 1d.
@@ -1364,6 +1434,8 @@ Examples:
   cx warmup --show-quota
   cx quota
   cx quota acct_001
+  cx quota acct_001 --refresh
+  cx quota --source auto
   cx resolve
   cx cooldown acct_001 5h
   cx cooldown clear acct_001
@@ -1890,20 +1962,49 @@ EOF
   if [[ "$mode" == "quota" ]]; then
     local output_format="text"
     local target_account=""
+    local refresh_quota=0
+    local quota_source_mode=""
+    local rows_dir="" snapshot_file="" pid=""
+    local -a quota_pids=()
 
-    for arg in "${codex_args[@]}"; do
+    quota_source_mode="$(_codex_quota_default_source)"
+
+    idx=1
+    while (( idx <= ${#codex_args[@]} )); do
+      arg="${codex_args[idx]}"
       case "$arg" in
         --json)
           output_format="json"
           ;;
+        --refresh)
+          refresh_quota=1
+          ;;
+        --source)
+          idx=$((idx + 1))
+          arg="${codex_args[idx]:-}"
+          if ! _codex_quota_source_is_valid "$arg"; then
+            echo "Usage: cx quota [account] [--json] [--refresh] [--source oauth|auto|rpc|status]"
+            return 1
+          fi
+          quota_source_mode="$arg"
+          ;;
+        --source=*)
+          arg="${arg#--source=}"
+          if ! _codex_quota_source_is_valid "$arg"; then
+            echo "Usage: cx quota [account] [--json] [--refresh] [--source oauth|auto|rpc|status]"
+            return 1
+          fi
+          quota_source_mode="$arg"
+          ;;
         *)
           if [[ -n "$target_account" ]]; then
-            echo "Usage: cx quota [account] [--json]"
+            echo "Usage: cx quota [account] [--json] [--refresh] [--source oauth|auto|rpc|status]"
             return 1
           fi
           target_account="$arg"
           ;;
       esac
+      idx=$((idx + 1))
     done
 
     if [[ -n "$target_account" ]]; then
@@ -1913,11 +2014,11 @@ EOF
       fi
 
       if [[ "$output_format" == "json" ]]; then
-        _codex_account_quota_snapshot "$target_account" json
+        _codex_account_quota_snapshot "$target_account" json "$refresh_quota" "$quota_source_mode"
         return $?
       fi
 
-      if ! quota_snapshot="$(_codex_account_quota_snapshot "$target_account" tsv 2>/dev/null)"; then
+      if ! quota_snapshot="$(_codex_account_quota_snapshot "$target_account" tsv "$refresh_quota" "$quota_source_mode" 2>/dev/null)"; then
         echo "Quota unavailable for $target_account"
         return 1
       fi
@@ -1960,26 +2061,44 @@ EOF
     fi
 
     if [[ -n "$(_codex_logged_in_accounts)" ]]; then
+      setopt localoptions no_monitor
       local -a accounts=("${(@f)$(_codex_logged_in_accounts)}")
       local account_width=7
       local rows_file now_epoch account_count=0 unavailable_count=0
       local primary_critical=0 primary_warning=0 secondary_critical=0 secondary_warning=0
       local next_primary_reset=""
-      local acct="" source_display="" primary_used_value="" secondary_used_value="" sort_reset="" quota_label=""
+      local acct="" primary_used_value="" secondary_used_value="" sort_reset="" quota_label=""
 
       now_epoch="$(_codex_now_epoch)"
       rows_file="$(mktemp "${TMPDIR:-/tmp}/codex-orbit-quota-board.XXXXXX")" || return 1
+      rows_dir="$(mktemp -d "${TMPDIR:-/tmp}/codex-orbit-quota-snapshots.XXXXXX")" || {
+        rm -f "$rows_file"
+        return 1
+      }
 
       for acct in "${accounts[@]}"; do
         [[ -n "$acct" ]] || continue
         (( ++account_count ))
+        (
+          _codex_account_quota_snapshot "$acct" tsv "$refresh_quota" "$quota_source_mode"
+        ) > "$rows_dir/$acct.snapshot" 2>/dev/null &
+        quota_pids+=("$!")
+      done
 
-        if ! quota_snapshot="$(_codex_account_quota_snapshot "$acct" tsv 2>/dev/null)"; then
+      for pid in "${quota_pids[@]}"; do
+        wait "$pid" 2>/dev/null || true
+      done
+
+      for acct in "${accounts[@]}"; do
+        [[ -n "$acct" ]] || continue
+        snapshot_file="$rows_dir/$acct.snapshot"
+        if [[ ! -s "$snapshot_file" ]]; then
           (( ++unavailable_count ))
           (( ${#acct} > account_width )) && account_width=${#acct}
           printf '0\t-1\t-1\t9999999999\t%s\t%s\tunavailable\t\t\t\t\t\t\n' "$acct" "$acct" >> "$rows_file"
           continue
         fi
+        quota_snapshot="$(< "$snapshot_file")"
 
         local sep=$'\x1f'
         IFS="$sep" read -r \
@@ -2030,13 +2149,12 @@ EOF
           sort_reset=9999999999
         fi
 
-        printf '1\t%s\t%s\t%010d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        printf '1\t%s\t%s\t%010d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
           "$primary_used_value" \
           "$secondary_used_value" \
           "$sort_reset" \
           "$acct" \
           "$quota_label" \
-          "${quota_source:-unknown}" \
           "$primary_remaining" \
           "$primary_used" \
           "$primary_reset" \
@@ -2066,13 +2184,13 @@ EOF
       printf '%s\n\n' "$summary_line"
 
       local reset_width=12
-      printf '%-*s  %-8s  %-*s  %-8s  %-*s  %s\n' \
+      local meter_width=15
+      printf '%-*s  %-*s  %-*s  %-*s  %-*s\n' \
         "$account_width" 'EMAIL' \
-        '5H LEFT' \
+        "$meter_width" '5H LEFT' \
         "$reset_width" '5H RESET' \
-        'WEEKLY' \
-        "$reset_width" 'WK RESET' \
-        'SOURCE'
+        "$meter_width" 'WEEKLY' \
+        "$reset_width" 'WK RESET'
 
       while IFS=$'\t' read -r \
         available_flag \
@@ -2081,7 +2199,6 @@ EOF
         sort_reset \
         acct \
         account_label \
-        source_display \
         primary_remaining \
         primary_used \
         primary_reset \
@@ -2089,25 +2206,24 @@ EOF
         secondary_used \
         secondary_reset; do
         if [[ "$available_flag" == "1" ]]; then
-          printf '%-*s  %-8s  %-*s  %-8s  %-*s  %s\n' \
+          printf '%-*s  %-*s  %-*s  %-*s  %-*s\n' \
             "$account_width" "$account_label" \
-            "$(_codex_quota_left_value "$primary_remaining" "$primary_used")%" \
+            "$meter_width" "$(_codex_quota_meter_cell "$primary_remaining" "$primary_used")" \
             "$reset_width" "$(_codex_format_timestamp_compact "$primary_reset" "$now_epoch")" \
-            "$(_codex_quota_left_value "$secondary_remaining" "$secondary_used")%" \
-            "$reset_width" "$(_codex_format_timestamp_compact "$secondary_reset" "$now_epoch")" \
-            "$source_display"
+            "$meter_width" "$(_codex_quota_meter_cell "$secondary_remaining" "$secondary_used")" \
+            "$reset_width" "$(_codex_format_timestamp_compact "$secondary_reset" "$now_epoch")"
         else
-          printf '%-*s  %-8s  %-*s  %-8s  %-*s  %s\n' \
+          printf '%-*s  %-*s  %-*s  %-*s  %-*s\n' \
             "$account_width" "$account_label" \
-            '-' \
+            "$meter_width" '-' \
             "$reset_width" '-' \
-            '-' \
-            "$reset_width" '-' \
-            'unavailable'
+            "$meter_width" '-' \
+            "$reset_width" '-'
         fi
       done < <(sort -t $'\t' -k1,1nr -k2,2nr -k3,3nr -k4,4n -k5,5 "$rows_file")
 
       rm -f "$rows_file"
+      rm -rf "$rows_dir"
       return 0
     fi
 
