@@ -18,8 +18,8 @@ TEMPLATE = """class CodexOrbit < Formula
   def install
     (libexec/"bin").install "bin/cx"
     (libexec/"libexec").install "libexec/codex-orbit.zsh",
-                              "libexec/codex-orbit-launch.py",
-                              "libexec/codex-orbit-quota.py"
+                              "libexec/codex-orbit-quota.py",
+                              "libexec/codex-orbit-shared-home.py"
 
     python_path = Formula["python@3.13"].opt_libexec/"bin"
     (bin/"cx").write <<~SH

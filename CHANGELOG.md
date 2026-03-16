@@ -1,3 +1,8 @@
+## [2026-03-16]
+
+- Fixed `cx quota` so it prepares the selected account home before probing quota, applying shared-session migration and config normalization consistently with launch and warmup flows.
+- Fixed account config normalization to deduplicate repeated `cli_auth_credentials_store` entries instead of rewriting only the first match.
+
 ## [2026-03-13]
 
 - Improved `cx quota` list output with fixed-width square meters for the 5-hour and weekly windows.

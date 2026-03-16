@@ -20,6 +20,12 @@ REFRESH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 REFRESH_URL = "https://auth.openai.com/oauth/token"
 DEFAULT_BASE_URL = "https://chatgpt.com/backend-api/"
 SHELL_FIELD_SEP = "\x1f"
+HTTP_TIMEOUT_SECONDS = 10
+RPC_TIMEOUT_SECONDS = 4
+RPC_POLL_INTERVAL_SECONDS = 0.1
+STATUS_STARTUP_DELAY_SECONDS = 0.4
+STATUS_TIMEOUT_SECONDS = 4
+STATUS_SETTLE_DELAY_SECONDS = 0.2
 
 
 class QuotaError(RuntimeError):
@@ -106,7 +112,7 @@ def refresh_tokens(auth_path, auth_obj):
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
             payload = json.load(response)
     except urllib.error.HTTPError as exc:
         try:
@@ -241,7 +247,7 @@ def fetch_oauth(paths):
 
     def do_request(token_value):
         request = urllib.request.Request(url, headers={**headers, "Authorization": f"Bearer {token_value}"})
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
             return json.load(response)
 
     try:
@@ -269,7 +275,7 @@ def fetch_oauth(paths):
 def read_rpc_message(proc, timeout):
     deadline = time.time() + timeout
     while time.time() < deadline:
-        ready, _, _ = select.select([proc.stdout, proc.stderr], [], [], 0.2)
+        ready, _, _ = select.select([proc.stdout, proc.stderr], [], [], RPC_POLL_INTERVAL_SECONDS)
         for handle in ready:
             line = handle.readline()
             if not line:
@@ -283,7 +289,7 @@ def read_rpc_message(proc, timeout):
     raise QuotaError("timed out waiting for codex app-server")
 
 
-def rpc_request(proc, request_id, method, params=None, timeout=8):
+def rpc_request(proc, request_id, method, params=None, timeout=RPC_TIMEOUT_SECONDS):
     payload = {"id": request_id, "method": method, "params": params or {}}
     proc.stdin.write(json.dumps(payload) + "\n")
     proc.stdin.flush()
@@ -388,12 +394,12 @@ def fetch_status(paths):
     )
     os.close(slave_fd)
     try:
-        time.sleep(0.8)
+        time.sleep(STATUS_STARTUP_DELAY_SECONDS)
         os.write(master_fd, b"/status\r")
         buffer = bytearray()
-        deadline = time.time() + 8
+        deadline = time.time() + STATUS_TIMEOUT_SECONDS
         while time.time() < deadline:
-            ready, _, _ = select.select([master_fd], [], [], 0.2)
+            ready, _, _ = select.select([master_fd], [], [], RPC_POLL_INTERVAL_SECONDS)
             if master_fd not in ready:
                 continue
             try:
@@ -404,7 +410,7 @@ def fetch_status(paths):
                 break
             buffer.extend(chunk)
             if b"Credits:" in buffer or b"5h limit" in buffer or b"Weekly limit" in buffer:
-                time.sleep(0.5)
+                time.sleep(STATUS_SETTLE_DELAY_SECONDS)
                 break
         text = ANSI_RE.sub("", buffer.decode("utf-8", "ignore"))
         snapshot = parse_status_text(text)

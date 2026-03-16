@@ -12,16 +12,17 @@ It is built for people who:
 
 - creates hidden account homes under `~/.codex-accounts/`
 - logs each account in once and reuses the saved auth later
+- keeps session history shared across all saved accounts while auth stays per-account
 - launches Codex through round robin by default
 - supports shell-local pinning so different terminals can stay on different accounts
-- waits for Codex startup to settle, then runs `/status` automatically when you launch bare `cx`
+- opens Codex directly with the routed account without injecting a startup command
 
 ## Requirements
 
 - macOS or Linux
 - `zsh`
 - official `codex` CLI installed and available in `PATH`
-- `python3` recommended if you want `cx list`, `cx which`, and `cx quota` to show live metadata and quota
+- `python3` required for shared-session migration, and recommended for `cx list`, `cx which`, and `cx quota`
 - `fzf` optional, but recommended for interactive pickers
 - `rg` required, used when normalizing copied config files
 
@@ -91,11 +92,11 @@ Launch Codex with the next routed account:
 cx
 ```
 
-`cx` opens Codex, waits for startup to settle, then runs `/status` so the command is not dropped during MCP initialization.
+`cx` opens Codex directly with the routed account.
 
 ## Commands
 
-- `cx`: open Codex with the next routed account and run `/status`
+- `cx`: open Codex with the next routed account
 - `cx login`: create the next hidden account slot and sign in once
 - `cx login-loop`: keep creating account slots and rerunning login until stopped
 - `cx delete`: archive a saved account into trash
@@ -211,31 +212,41 @@ Important paths:
 
 - `~/.codex-accounts/acct_001/`
 - `~/.codex-accounts/acct_002/`
+- `~/.codex-accounts/.shared/`
 - `~/.codex-accounts/.state/last_account`
 - `~/.codex-accounts/.state/round_robin_last_account`
 - `~/.codex-accounts/.state/cooldowns/acct_001.until`
 - `~/.codex-accounts/.state/session_<tty>_pinned_account`
 - `~/.codex-accounts/.trash/20260312003000_acct_002/`
 
-Each account home gets its own:
+Each account home keeps its own:
 
 - `config.toml`
 - `auth.json`
-- logs
-- memories
 - temp files
+
+Shared across all accounts:
+
+- `history.jsonl`
+- `state_5.sqlite`
+- `logs_1.sqlite`
+- `sessions/`
+- `shell_snapshots/`
+- `memories/`
 
 ## Notes
 
 - Homebrew installs the `cx` command only. You do not need to add any `source ...` line to your shell profile for normal usage.
 - The direct installer places files under `~/.local/share/codex-orbit/` and links `cx` into `~/.local/bin/` by default.
 - The direct installer fetches the latest tagged release by default. Set `CODEX_ORBIT_INSTALL_REF=main` if you explicitly want the current branch head instead.
-- `cx list` reads masked email, plan, default workspace, and workspace count from the saved `id_token` when `python3` is available.
-- `cx warmup` is manual only. It sends a minimal non-interactive prompt to the selected account to deliberately start that account's current 5h window.
+- `cx list` reads email, plan, default workspace, and workspace count from the saved `id_token` when `python3` is available.
+- `cx warmup` is manual only. It sends a minimal non-interactive prompt to the selected account to deliberately start that account's current 5h window, and temporarily disables configured MCP servers for that warmup run.
 - `cx warmup` skips the post-run quota refresh by default for speed. Use `cx warmup --show-quota` if you want it immediately.
 - `cx list` in a terminal opens an interactive menu. Select an account, then choose one of four actions: launch, replace login, disable/enable, or delete. After an action completes, the account list stays open until you cancel it.
 - Disabled accounts stay on disk but are skipped by round robin and by pinned-account resolution until re-enabled.
 - `cx quota` uses the same sources CodexBar does: `auth.json` -> `https://chatgpt.com/backend-api/wham/usage`, then `codex app-server`, then `/status` as a last fallback.
+- `cx quota` caches TSV snapshots for 30 seconds by default so repeated checks are fast. Set `CODEX_ORBIT_QUOTA_CACHE_TTL_SECONDS=0` to disable that cache, or set a different TTL in seconds.
+- On first run after upgrading, `codex-orbit` migrates existing per-account sessions into `~/.codex-accounts/.shared/` and replaces the per-account copies with symlinks.
 - One email can belong to multiple workspaces, so `cx list` shows the default workspace plus `(+N)` when more are available. Use `cx list --verbose` to see the full workspace title list.
 - Round robin is the default because the Codex CLI does not expose a documented machine-readable quota command.
 - If you want a shell to stay on one account, use `cx pin` or `cx pin-next`.

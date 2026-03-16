@@ -97,7 +97,6 @@ fi
 
 rm -f "$target_internal_bin"
 rm -f "$target_libexec/codex-orbit.zsh"
-rm -f "$target_libexec/codex-orbit-launch.py"
 rm -f "$target_libexec/codex-orbit-quota.py"
 rmdir "$target_libexec" 2>/dev/null || true
 rmdir "$install_dir/bin" 2>/dev/null || true

@@ -1,3 +1,19 @@
+## [2026-03-16 00:00] quota-config-prep-fix
+
+- **Task**: update the `cx quota` wrapper so it stays compatible with current Codex account config handling
+- **Changes**:
+  - Changed account config normalization to collapse duplicate `cli_auth_credentials_store` entries into one canonical line.
+  - Updated `cx quota` snapshot preparation to run `_codex_prepare_account_home` before invoking the quota helper.
+  - Added changelog notes for the quota/config fix.
+- **Files**:
+  - `libexec/codex-orbit.zsh`
+  - `CHANGELOG.md`
+  - `CHANGELOG_AGENT.md`
+- **Verification**:
+  - `zsh -n libexec/codex-orbit.zsh`
+  - Temporary-home config normalization smoke test for duplicate `cli_auth_credentials_store`
+  - Temporary-home `bin/cx quota acct_001` smoke test with a fake `python3` shim asserting account prep ran first
+
 ## [2026-03-12 01:25] codexbar-style-quota-fetch
 
 - **Task**: inspect CodexBar quota detection and implement the same live quota path in codex-orbit
