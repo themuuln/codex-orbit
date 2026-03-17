@@ -692,19 +692,11 @@ _codex_repo_checkout_root() {
 }
 
 _codex_current_install_method() {
-  local repo_root="" cellar=""
+  local repo_root=""
 
   if repo_root="$(_codex_repo_checkout_root 2>/dev/null)"; then
     printf 'repo\n'
     return 0
-  fi
-
-  if command -v brew >/dev/null 2>&1; then
-    cellar="$(brew --cellar codex-orbit 2>/dev/null || true)"
-    if [[ -n "$cellar" && "$CODEX_ORBIT_LIBEXEC_DIR" == "$cellar/"* ]]; then
-      printf 'brew\n'
-      return 0
-    fi
   fi
 
   printf 'direct\n'
@@ -729,15 +721,6 @@ _codex_update_repo_checkout() {
   fi
 
   git -C "$repo_root" pull --ff-only
-}
-
-_codex_update_homebrew() {
-  command -v brew >/dev/null 2>&1 || {
-    echo "Homebrew is required for this update path"
-    return 1
-  }
-
-  HOMEBREW_NO_AUTO_UPDATE=1 brew upgrade codex-orbit
 }
 
 _codex_update_direct_install() {
@@ -767,10 +750,6 @@ _codex_update_self() {
     repo)
       echo "Update method: repo checkout"
       _codex_update_repo_checkout
-      ;;
-    brew)
-      echo "Update method: Homebrew"
-      _codex_update_homebrew
       ;;
     direct)
       echo "Update method: direct install"

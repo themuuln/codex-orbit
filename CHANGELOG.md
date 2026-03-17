@@ -1,6 +1,6 @@
 ## [2026-03-16]
 
-- Added `cx update` for direct installs, Homebrew installs, and clean repo checkouts.
+- Added `cx update` for direct installs and clean repo checkouts.
 - Added account aliases so commands can target friendly names like `work` instead of only `acct_001`.
 - Changed default routing back to fast round robin so `cx` startup stays snappy; quota-aware routing remains available via `CODEX_ORBIT_ROUTING=quota`.
 - Made `cx pin-next` follow the active routing strategy so it stays consistent with quota-aware selection.
@@ -12,7 +12,7 @@
 - Fixed `cx quota` so it prepares the selected account home before probing quota, applying shared-session migration and config normalization consistently with launch and warmup flows.
 - Added an interactive `cx quota` loading spinner with Unicode frames and ASCII fallback.
 - Fixed `cx quota --json` to reuse cached snapshots when available instead of forcing a live refresh path.
-- Expanded the Homebrew formula to include `cx share` support and install a sourceable wrapper under `share/codex-orbit/`.
+- Removed project-maintained package-manager publishing and kept installation focused on the direct installer and repo checkouts.
 - Fixed account config normalization to deduplicate repeated `cli_auth_credentials_store` entries instead of rewriting only the first match.
 
 ## [2026-03-13]
@@ -23,11 +23,11 @@
 ## [2026-03-12]
 
 - Added `MIT` licensing and removed the remaining “private for now” release blocker.
-- Added `uninstall.sh` for non-Homebrew installs.
+- Added `uninstall.sh` for direct installs.
 - Changed the curl installer to prefer the latest tagged release by default, with `CODEX_ORBIT_INSTALL_REF` override support.
-- Added reusable release scripts and GitHub Actions for macOS/Linux validation, Homebrew install checks, and automated tag-to-release plus tap publishing.
+- Added reusable release scripts and GitHub Actions for macOS/Linux validation and automated tag-to-release publishing.
 - Added a real `install.sh` so users can install `cx` without hardcoded local paths.
-- Fixed wrapper path resolution so packaged and Homebrew installs can find `libexec` correctly through symlinks.
+- Fixed wrapper path resolution so installed copies can find `libexec` correctly through symlinks.
 - Restored a root `codex-orbit.zsh` shim for backward-compatible shell sourcing.
 - `cx list` now opens an interactive account browser in a TTY, with per-account actions for launch, replace login, disable/enable, and delete.
 - Added a persistent disabled-account state so accounts can stay on disk but be skipped by round-robin routing.

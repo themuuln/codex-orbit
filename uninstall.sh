@@ -18,7 +18,6 @@ Environment:
   CODEX_ORBIT_SHELL_RC    Same as --shell-rc
 
 Notes:
-  Homebrew installs should be removed with: brew uninstall codex-orbit
 EOF
 }
 

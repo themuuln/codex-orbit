@@ -13,7 +13,7 @@ It is built for people who:
 - creates hidden account homes under `~/.codex-accounts/`
 - logs each account in once and reuses the saved auth later
 - keeps session history shared across all saved accounts while auth stays per-account
-- routes Codex launches automatically, preferring the account with the most quota left
+- routes Codex launches automatically with fast round-robin selection by default
 - supports shell-local pinning so different terminals can stay on different accounts
 - opens Codex directly with the routed account without injecting a startup command
 
@@ -27,13 +27,6 @@ It is built for people who:
 - `rg` required, used when normalizing copied config files
 
 ## Install
-
-Homebrew:
-
-```zsh
-brew tap themuuln/tap
-brew install codex-orbit
-```
 
 Direct install:
 
@@ -66,12 +59,6 @@ Optional legacy shell sourcing is still supported if you want the functions in y
 
 ```zsh
 source /path/to/codex-orbit/codex-orbit.zsh
-```
-
-With Homebrew, the sourceable wrapper is installed at:
-
-```zsh
-source "$(brew --prefix)/share/codex-orbit/codex-orbit.zsh"
 ```
 
 ## Quick Start
@@ -243,12 +230,6 @@ cx cooldown clear acct_002
 
 ## Uninstall
 
-Homebrew install:
-
-```zsh
-brew uninstall codex-orbit
-```
-
 Direct install:
 
 ```zsh
@@ -291,7 +272,6 @@ Shared across all accounts:
 
 ## Notes
 
-- Homebrew installs the `cx` command and a sourceable wrapper at `$(brew --prefix)/share/codex-orbit/codex-orbit.zsh`. You do not need to source it for normal `cx` usage.
 - The direct installer places files under `~/.local/share/codex-orbit/` and links `cx` into `~/.local/bin/` by default.
 - When `~/.local/bin/` is not already on `PATH`, the direct installer appends a managed PATH block to your shell rc file unless you pass `--no-modify-shell`.
 - The direct installer installs `main` by default. Set `CODEX_ORBIT_INSTALL_REF=vX.Y.Z` when you want to pin a release tag explicitly.
