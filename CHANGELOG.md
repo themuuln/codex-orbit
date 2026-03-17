@@ -1,9 +1,17 @@
 ## [2026-03-16]
 
+- Added `cx update` for direct installs, Homebrew installs, and clean repo checkouts.
+- Added account aliases so commands can target friendly names like `work` instead of only `acct_001`.
+- Switched default routing to a quota-aware selector with round-robin fallback when quota data is unavailable.
+- Made `cx pin-next` follow the active routing strategy so it stays consistent with quota-aware selection.
+- Added `cx share config export` and `cx share config import` so `~/.codex/config.toml` can move between machines independently of account auth.
 - Added `cx share export` and `cx share import` so saved logins can move between machines without re-running `codex login` on every device.
+- Tightened exported and imported share file permissions so portable auth and config artifacts are written with owner-only access.
 - Changed the curl installer to install `main` by default so `curl .../main/install.sh | sh` works as a single copy-paste install again; pinned tags remain available through `CODEX_ORBIT_INSTALL_REF=vX.Y.Z`.
 - Added managed shell rc PATH updates for direct installs, plus matching uninstall cleanup and opt-out flags.
 - Fixed `cx quota` so it prepares the selected account home before probing quota, applying shared-session migration and config normalization consistently with launch and warmup flows.
+- Added an interactive `cx quota` loading spinner with Unicode frames and ASCII fallback.
+- Fixed `cx quota --json` to reuse cached snapshots when available instead of forcing a live refresh path.
 - Fixed account config normalization to deduplicate repeated `cli_auth_credentials_store` entries instead of rewriting only the first match.
 
 ## [2026-03-13]

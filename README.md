@@ -13,7 +13,7 @@ It is built for people who:
 - creates hidden account homes under `~/.codex-accounts/`
 - logs each account in once and reuses the saved auth later
 - keeps session history shared across all saved accounts while auth stays per-account
-- launches Codex through round robin by default
+- routes Codex launches automatically, preferring the account with the most quota left
 - supports shell-local pinning so different terminals can stay on different accounts
 - opens Codex directly with the routed account without injecting a startup command
 
@@ -104,15 +104,19 @@ cx
 - `cx delete`: archive a saved account into trash
 - `cx doctor`: validate dependencies, state paths, and account health
 - `cx pin`: pick a logged-in account and pin it to the current shell
-- `cx pin-next`: pin the next round-robin logged-in account to the current shell
-- `cx unpin`: clear the current shell pin and return to round robin
+- `cx pin-next`: pin the next routed logged-in account to the current shell
+- `cx unpin`: clear the current shell pin and return to automatic routing
 - `cx current`: show the current shell pin and last launched account
 - `cx status`: show login status for all discovered account slots
 - `cx warmup`: send a minimal prompt to start the selected account's current 5h window
 - `cx quota`: fetch live quota for one or all saved accounts
   Supports `--refresh` and `--source oauth|auto|rpc|status`
+- `cx alias`: assign a shell-friendly alias to an account and use it in other commands
+- `cx update`: update `codex-orbit` based on the current install method
 - `cx share export`: export one or more logged-in accounts into a portable archive
 - `cx share import`: import accounts from a portable archive
+- `cx share config export`: export the global Codex CLI config
+- `cx share config import`: import the global Codex CLI config
 - `cx list`: open an interactive account browser in a TTY, or print saved accounts in non-interactive use
 - `cx list --plain`: print only account slot names for scripts
 - `cx list --verbose`: include workspace list, auth mode, and short account id
@@ -155,11 +159,17 @@ cx warmup acct_001
 cx warmup --show-quota
 cx quota
 cx quota acct_001
+cx quota work
 cx quota acct_001 --refresh
 cx quota --source auto
+cx alias acct_001 work
+cx alias clear work
+cx update
 cx share export
 cx share export acct_001 --output ~/Desktop/codex-orbit-share.tar.gz
 cx share import ~/Desktop/codex-orbit-share.tar.gz
+cx share config export
+cx share config import ~/Desktop/codex-orbit-config-share.tar.gz
 cx which
 cx resolve
 ```
@@ -177,6 +187,20 @@ Machine B:
 ```zsh
 cx share import ~/Desktop/codex-orbit-share.tar.gz
 cx list
+```
+
+Move only the global Codex CLI config:
+
+Machine A:
+
+```zsh
+cx share config export --output ~/Desktop/codex-orbit-config-share.tar.gz
+```
+
+Machine B:
+
+```zsh
+cx share config import ~/Desktop/codex-orbit-config-share.tar.gz
 ```
 
 Pin different terminals to different accounts:
@@ -266,9 +290,13 @@ Shared across all accounts:
 - When `~/.local/bin/` is not already on `PATH`, the direct installer appends a managed PATH block to your shell rc file unless you pass `--no-modify-shell`.
 - The direct installer installs `main` by default. Set `CODEX_ORBIT_INSTALL_REF=vX.Y.Z` when you want to pin a release tag explicitly.
 - `cx share export` includes portable login files only: per-account `auth.json` and `config.toml`. It does not export cooldowns, pins, trash, or other device-local state.
+- `cx share config export` includes only `~/.codex/config.toml`. `cx share config import` replaces the target machine's global config after writing a timestamped backup when one already exists.
+- Account aliases accept only shell-friendly names made from letters, numbers, dot, underscore, and hyphen.
+- Bare `cx`, `cx which`, and `cx warmup` use quota-aware routing by default and fall back to round robin when quota data is unavailable. Set `CODEX_ORBIT_ROUTING=round-robin` if you want the old behavior.
 - `cx list` reads email, plan, default workspace, and workspace count from the saved `id_token` when `python3` is available.
 - `cx warmup` is manual only. It sends a minimal non-interactive prompt to the selected account to deliberately start that account's current 5h window, and temporarily disables configured MCP servers for that warmup run.
 - `cx warmup` skips the post-run quota refresh by default for speed. Use `cx warmup --show-quota` if you want it immediately.
+- `cx quota` shows an interactive loading spinner in TTYs and can reuse cached snapshots for `--json` output unless you pass `--refresh`.
 - `cx list` in a terminal opens an interactive menu. Select an account, then choose one of four actions: launch, replace login, disable/enable, or delete. After an action completes, the account list stays open until you cancel it.
 - Disabled accounts stay on disk but are skipped by round robin and by pinned-account resolution until re-enabled.
 - `cx quota` uses the same sources CodexBar does: `auth.json` -> `https://chatgpt.com/backend-api/wham/usage`, then `codex app-server`, then `/status` as a last fallback.

@@ -60,6 +60,59 @@ jobs:
           import_home="$(mktemp -d)"
           HOME="$import_home" "$temp_home/bin/cx" share import "$temp_home/share.tar.gz"
           test -f "$import_home/.codex-accounts/acct_001/auth.json"
+          python3 - "$temp_home/share.tar.gz" "$import_home/.codex-accounts/acct_001/auth.json" <<'PY'
+import os
+import stat
+import sys
+
+for path in sys.argv[1:]:
+    mode = stat.S_IMODE(os.stat(path).st_mode)
+    if mode != 0o600:
+        raise SystemExit(f"{path} has mode {oct(mode)}, expected 0o600")
+PY
+          mkdir -p "$temp_home/.codex"
+          printf 'model = "gpt-5"\n' > "$temp_home/.codex/config.toml"
+          HOME="$temp_home" "$temp_home/bin/cx" share config export --output "$temp_home/config-share.tar.gz"
+          config_home="$(mktemp -d)"
+          HOME="$config_home" "$temp_home/bin/cx" share config import "$temp_home/config-share.tar.gz"
+          test -f "$config_home/.codex/config.toml"
+          python3 - "$temp_home/config-share.tar.gz" "$config_home/.codex/config.toml" <<'PY'
+import os
+import stat
+import sys
+
+for path in sys.argv[1:]:
+    mode = stat.S_IMODE(os.stat(path).st_mode)
+    if mode != 0o600:
+        raise SystemExit(f"{path} has mode {oct(mode)}, expected 0o600")
+PY
+          mkdir -p "$temp_home/.codex-accounts/acct_002"
+          printf '{"tokens":{"access_token":"test-2"}}\n' > "$temp_home/.codex-accounts/acct_002/auth.json"
+          : > "$temp_home/.codex-accounts/acct_002/config.toml"
+          python3 - "$temp_home" <<'PY'
+import pathlib
+import sys
+
+home = pathlib.Path(sys.argv[1])
+cache_dir = home / ".codex-accounts" / ".state" / "quota-cache"
+cache_dir.mkdir(parents=True, exist_ok=True)
+sep = "\x1f"
+
+def write_snapshot(account: str, remaining: int) -> None:
+    fields = [
+        "oauth", "", "", "", "0", "0",
+        str(100 - remaining), str(remaining), "9999999999", "5h",
+        "0", "100", "9999999999", "weekly",
+    ]
+    (cache_dir / f"{account}.oauth.tsv").write_text(sep.join(fields) + "\n", encoding="utf-8")
+
+write_snapshot("acct_001", 20)
+write_snapshot("acct_002", 80)
+PY
+          HOME="$temp_home" "$temp_home/bin/cx" alias acct_002 work
+          test "$(HOME="$temp_home" "$temp_home/bin/cx" resolve)" = "acct_002"
+          HOME="$temp_home" "$temp_home/bin/cx" pin-next >/dev/null
+          HOME="$temp_home" "$temp_home/bin/cx" current | grep -F 'Pinned: work (acct_002)'
           HOME="$temp_home" ./uninstall.sh --bin-dir "$temp_home/bin" --install-dir "$temp_home/share/codex-orbit"
           test ! -e "$temp_home/bin/cx"
 
