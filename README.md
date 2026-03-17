@@ -68,6 +68,12 @@ Optional legacy shell sourcing is still supported if you want the functions in y
 source /path/to/codex-orbit/codex-orbit.zsh
 ```
 
+With Homebrew, the sourceable wrapper is installed at:
+
+```zsh
+source "$(brew --prefix)/share/codex-orbit/codex-orbit.zsh"
+```
+
 ## Quick Start
 
 Create and log in the first account:
@@ -285,7 +291,7 @@ Shared across all accounts:
 
 ## Notes
 
-- Homebrew installs the `cx` command only. You do not need to add any `source ...` line to your shell profile for normal usage.
+- Homebrew installs the `cx` command and a sourceable wrapper at `$(brew --prefix)/share/codex-orbit/codex-orbit.zsh`. You do not need to source it for normal `cx` usage.
 - The direct installer places files under `~/.local/share/codex-orbit/` and links `cx` into `~/.local/bin/` by default.
 - When `~/.local/bin/` is not already on `PATH`, the direct installer appends a managed PATH block to your shell rc file unless you pass `--no-modify-shell`.
 - The direct installer installs `main` by default. Set `CODEX_ORBIT_INSTALL_REF=vX.Y.Z` when you want to pin a release tag explicitly.

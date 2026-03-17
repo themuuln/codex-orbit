@@ -19,6 +19,7 @@ TEMPLATE = """class CodexOrbit < Formula
     (libexec/"bin").install "bin/cx"
     (libexec/"libexec").install "libexec/codex-orbit.zsh",
                               "libexec/codex-orbit-quota.py",
+                              "libexec/codex-orbit-share.py",
                               "libexec/codex-orbit-shared-home.py"
 
     python_path = Formula["python@3.13"].opt_libexec/"bin"
@@ -29,10 +30,19 @@ TEMPLATE = """class CodexOrbit < Formula
       exec "#{{libexec}}/bin/cx" "$@"
     SH
     chmod 0755, bin/"cx"
+
+    (share/"codex-orbit").mkpath
+    (share/"codex-orbit"/"codex-orbit.zsh").write <<~SH
+      typeset -g CODEX_ORBIT_LIBEXEC_DIR="#{{libexec}}/libexec"
+      source "#{{libexec}}/libexec/codex-orbit.zsh"
+    SH
   end
 
   test do
     assert_match "Usage: cx", shell_output("#{{bin}}/cx --help")
+    assert_match "Usage: cx share", shell_output("#{{bin}}/cx share --help")
+    assert_predicate share/"codex-orbit/codex-orbit.zsh", :exist?
+    assert_match "Usage: cx", shell_output("zsh -lc 'source #{{share}}/codex-orbit/codex-orbit.zsh && cx --help'")
   end
 end
 """

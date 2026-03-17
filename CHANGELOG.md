@@ -12,6 +12,7 @@
 - Fixed `cx quota` so it prepares the selected account home before probing quota, applying shared-session migration and config normalization consistently with launch and warmup flows.
 - Added an interactive `cx quota` loading spinner with Unicode frames and ASCII fallback.
 - Fixed `cx quota --json` to reuse cached snapshots when available instead of forcing a live refresh path.
+- Expanded the Homebrew formula to include `cx share` support and install a sourceable wrapper under `share/codex-orbit/`.
 - Fixed account config normalization to deduplicate repeated `cli_auth_credentials_store` entries instead of rewriting only the first match.
 
 ## [2026-03-13]
