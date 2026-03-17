@@ -41,11 +41,13 @@ Direct install:
 curl -fsSL https://raw.githubusercontent.com/themuuln/codex-orbit/main/install.sh | sh
 ```
 
-The direct installer defaults to the latest tagged release. To install a branch or a specific tag instead:
+The direct installer adds its bin dir to your shell rc automatically when needed. By default that is `~/.zshrc` for zsh users and `~/.bashrc` or `~/.bash_profile` for bash users. Pass `--no-modify-shell` if you want to manage `PATH` yourself.
+
+The direct installer installs `main` by default. To pin a specific branch or tag instead:
 
 ```zsh
-curl -fsSL https://raw.githubusercontent.com/themuuln/codex-orbit/main/install.sh | CODEX_ORBIT_INSTALL_REF=main sh
 curl -fsSL https://raw.githubusercontent.com/themuuln/codex-orbit/main/install.sh | CODEX_ORBIT_INSTALL_REF=v0.1.0 sh
+curl -fsSL https://raw.githubusercontent.com/themuuln/codex-orbit/main/install.sh | CODEX_ORBIT_INSTALL_REF=my-branch sh
 ```
 
 Local checkout install:
@@ -241,7 +243,8 @@ Shared across all accounts:
 
 - Homebrew installs the `cx` command only. You do not need to add any `source ...` line to your shell profile for normal usage.
 - The direct installer places files under `~/.local/share/codex-orbit/` and links `cx` into `~/.local/bin/` by default.
-- The direct installer fetches the latest tagged release by default. Set `CODEX_ORBIT_INSTALL_REF=main` if you explicitly want the current branch head instead.
+- When `~/.local/bin/` is not already on `PATH`, the direct installer appends a managed PATH block to your shell rc file unless you pass `--no-modify-shell`.
+- The direct installer installs `main` by default. Set `CODEX_ORBIT_INSTALL_REF=vX.Y.Z` when you want to pin a release tag explicitly.
 - `cx list` reads email, plan, default workspace, and workspace count from the saved `id_token` when `python3` is available.
 - `cx warmup` is manual only. It sends a minimal non-interactive prompt to the selected account to deliberately start that account's current 5h window, and temporarily disables configured MCP servers for that warmup run.
 - `cx warmup` skips the post-run quota refresh by default for speed. Use `cx warmup --show-quota` if you want it immediately.

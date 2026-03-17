@@ -41,7 +41,7 @@ jobs:
         run: |
           zsh -n bin/cx libexec/codex-orbit.zsh codex-orbit.zsh
           sh -n install.sh uninstall.sh scripts/build-release-archive.sh
-          python3 -m py_compile libexec/codex-orbit-launch.py libexec/codex-orbit-quota.py scripts/render-homebrew-formula.py
+          python3 -m py_compile libexec/codex-orbit-shared-home.py libexec/codex-orbit-quota.py scripts/render-homebrew-formula.py
 
       - name: Repo-local smoke test
         run: |

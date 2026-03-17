@@ -15,12 +15,14 @@ fail() {
 
 usage() {
   cat <<'EOF'
-Usage: install.sh [--ref <git-ref>] [--bin-dir <dir>] [--install-dir <dir>] [--force]
+Usage: install.sh [--ref <git-ref>] [--bin-dir <dir>] [--install-dir <dir>] [--shell-rc <path>] [--no-modify-shell] [--force]
 
 Options:
-  --ref <git-ref>         Git branch or tag to install. Default: latest tagged release
+  --ref <git-ref>         Git branch or tag to install. Default: main
   --bin-dir <dir>         Where the cx symlink should be placed.
   --install-dir <dir>     Where codex-orbit files should live.
+  --shell-rc <path>       Shell rc file to update when adding the bin dir to PATH.
+  --no-modify-shell       Do not edit the shell rc file even if bin dir is missing from PATH.
   --force                 Replace an existing cx symlink or binary.
   --help                  Show this help message.
 
@@ -28,6 +30,8 @@ Environment:
   CODEX_ORBIT_INSTALL_REF Same as --ref
   CODEX_ORBIT_BIN_DIR     Same as --bin-dir
   CODEX_ORBIT_INSTALL_DIR Same as --install-dir
+  CODEX_ORBIT_SHELL_RC    Same as --shell-rc
+  CODEX_ORBIT_MODIFY_SHELL Set to 0 to disable shell rc updates
 EOF
 }
 
@@ -86,18 +90,6 @@ download_source() {
   printf '%s\n' "$1"
 }
 
-resolve_latest_release_ref() {
-  api_url="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest"
-  release_json="$(curl -fsSL "$api_url" 2>/dev/null || true)"
-  tag="$(printf '%s' "$release_json" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
-
-  if [ -n "$tag" ]; then
-    printf '%s\n' "$tag"
-  else
-    printf 'main\n'
-  fi
-}
-
 cleanup() {
   set +e
   for path in $tmp_paths; do
@@ -105,9 +97,80 @@ cleanup() {
   done
 }
 
-ref="${CODEX_ORBIT_INSTALL_REF:-}"
+default_shell_rc() {
+  if [ -n "${CODEX_ORBIT_SHELL_RC:-}" ]; then
+    printf '%s\n' "$CODEX_ORBIT_SHELL_RC"
+    return 0
+  fi
+
+  shell_name="${SHELL##*/}"
+  case "$shell_name" in
+    zsh)
+      printf '%s\n' "${ZDOTDIR:-$HOME}/.zshrc"
+      ;;
+    bash)
+      if [ -f "$HOME/.bashrc" ] || [ ! -f "$HOME/.bash_profile" ]; then
+        printf '%s\n' "$HOME/.bashrc"
+      else
+        printf '%s\n' "$HOME/.bash_profile"
+      fi
+      ;;
+    *)
+      printf '%s\n' "${ZDOTDIR:-$HOME}/.zshrc"
+      ;;
+  esac
+}
+
+shell_path_entry() {
+  case "$1" in
+    "$HOME")
+      printf '%s\n' '$HOME'
+      ;;
+    "$HOME"/*)
+      printf '$HOME/%s\n' "${1#"$HOME"/}"
+      ;;
+    *)
+      printf '%s\n' "$1"
+      ;;
+  esac
+}
+
+ensure_shell_rc_path() {
+  shell_rc="$1"
+  managed_bin_dir="$2"
+  managed_path_line="export PATH=\"$managed_bin_dir:\$PATH\""
+  begin_marker="# >>> codex-orbit PATH >>>"
+  end_marker="# <<< codex-orbit PATH <<<"
+
+  mkdir -p "$(dirname "$shell_rc")"
+  if [ ! -f "$shell_rc" ]; then
+    : > "$shell_rc"
+  fi
+
+  if grep -Fq "$begin_marker" "$shell_rc"; then
+    return 0
+  fi
+
+  if grep -Fq "$managed_path_line" "$shell_rc"; then
+    return 0
+  fi
+
+  if [ -s "$shell_rc" ]; then
+    printf '\n' >> "$shell_rc"
+  fi
+
+  {
+    printf '%s\n' "$begin_marker"
+    printf '%s\n' "$managed_path_line"
+    printf '%s\n' "$end_marker"
+  } >> "$shell_rc"
+}
+
+ref="${CODEX_ORBIT_INSTALL_REF:-main}"
 bin_dir="$(default_bin_dir)"
 install_dir="$(default_install_dir)"
+shell_rc="$(default_shell_rc)"
+modify_shell="${CODEX_ORBIT_MODIFY_SHELL:-1}"
 force=0
 tmp_paths=""
 
@@ -127,6 +190,15 @@ while [ "$#" -gt 0 ]; do
       [ "$#" -ge 2 ] || fail "missing value for --install-dir"
       install_dir="$2"
       shift 2
+      ;;
+    --shell-rc)
+      [ "$#" -ge 2 ] || fail "missing value for --shell-rc"
+      shell_rc="$2"
+      shift 2
+      ;;
+    --no-modify-shell)
+      modify_shell=0
+      shift
       ;;
     --force)
       force=1
@@ -148,9 +220,6 @@ script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 if [ -f "$script_dir/bin/cx" ] && [ -f "$script_dir/libexec/codex-orbit.zsh" ]; then
   source_dir="$script_dir"
 else
-  if [ -z "$ref" ]; then
-    ref="$(resolve_latest_release_ref)"
-  fi
   source_dir="$(download_source "$ref")"
 fi
 
@@ -183,8 +252,16 @@ case ":$PATH:" in
   *":$bin_dir:"*)
     ;;
   *)
-    say ""
-    say "Add $bin_dir to PATH if it is not already there."
+    managed_bin_dir="$(shell_path_entry "$bin_dir")"
+    if [ "$modify_shell" = "0" ]; then
+      say ""
+      say "Add $bin_dir to PATH if it is not already there."
+    else
+      ensure_shell_rc_path "$shell_rc" "$managed_bin_dir"
+      say ""
+      say "Added $bin_dir to PATH in $shell_rc"
+      say "Open a new shell or run: . \"$shell_rc\""
+    fi
     ;;
 esac
 

@@ -1,5 +1,7 @@
 ## [2026-03-16]
 
+- Changed the curl installer to install `main` by default so `curl .../main/install.sh | sh` works as a single copy-paste install again; pinned tags remain available through `CODEX_ORBIT_INSTALL_REF=vX.Y.Z`.
+- Added managed shell rc PATH updates for direct installs, plus matching uninstall cleanup and opt-out flags.
 - Fixed `cx quota` so it prepares the selected account home before probing quota, applying shared-session migration and config normalization consistently with launch and warmup flows.
 - Fixed account config normalization to deduplicate repeated `cli_auth_credentials_store` entries instead of rewriting only the first match.
 
