@@ -106,8 +106,8 @@ write_snapshot("acct_001", 20)
 write_snapshot("acct_002", 80)
 PY
           HOME="$temp_home" "$temp_home/bin/cx" alias acct_002 work
-          test "$(HOME="$temp_home" "$temp_home/bin/cx" resolve)" = "acct_002"
-          HOME="$temp_home" "$temp_home/bin/cx" pin-next >/dev/null
+          test "$(HOME="$temp_home" CODEX_ORBIT_ROUTING=quota "$temp_home/bin/cx" resolve)" = "acct_002"
+          HOME="$temp_home" CODEX_ORBIT_ROUTING=quota "$temp_home/bin/cx" pin-next >/dev/null
           HOME="$temp_home" "$temp_home/bin/cx" current | grep -F 'Pinned: work (acct_002)'
           HOME="$temp_home" ./uninstall.sh --bin-dir "$temp_home/bin" --install-dir "$temp_home/share/codex-orbit"
 

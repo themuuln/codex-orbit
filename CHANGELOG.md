@@ -2,7 +2,7 @@
 
 - Added `cx update` for direct installs, Homebrew installs, and clean repo checkouts.
 - Added account aliases so commands can target friendly names like `work` instead of only `acct_001`.
-- Switched default routing to a quota-aware selector with round-robin fallback when quota data is unavailable.
+- Changed default routing back to fast round robin so `cx` startup stays snappy; quota-aware routing remains available via `CODEX_ORBIT_ROUTING=quota`.
 - Made `cx pin-next` follow the active routing strategy so it stays consistent with quota-aware selection.
 - Added `cx share config export` and `cx share config import` so `~/.codex/config.toml` can move between machines independently of account auth.
 - Added `cx share export` and `cx share import` so saved logins can move between machines without re-running `codex login` on every device.

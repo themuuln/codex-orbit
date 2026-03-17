@@ -292,7 +292,7 @@ Shared across all accounts:
 - `cx share export` includes portable login files only: per-account `auth.json` and `config.toml`. It does not export cooldowns, pins, trash, or other device-local state.
 - `cx share config export` includes only `~/.codex/config.toml`. `cx share config import` replaces the target machine's global config after writing a timestamped backup when one already exists.
 - Account aliases accept only shell-friendly names made from letters, numbers, dot, underscore, and hyphen.
-- Bare `cx`, `cx which`, and `cx warmup` use quota-aware routing by default and fall back to round robin when quota data is unavailable. Set `CODEX_ORBIT_ROUTING=round-robin` if you want the old behavior.
+- Bare `cx`, `cx which`, and `cx warmup` use fast round-robin routing by default so startup stays snappy. Set `CODEX_ORBIT_ROUTING=quota` when you want cached quota-aware selection instead.
 - `cx list` reads email, plan, default workspace, and workspace count from the saved `id_token` when `python3` is available.
 - `cx warmup` is manual only. It sends a minimal non-interactive prompt to the selected account to deliberately start that account's current 5h window, and temporarily disables configured MCP servers for that warmup run.
 - `cx warmup` skips the post-run quota refresh by default for speed. Use `cx warmup --show-quota` if you want it immediately.
@@ -304,7 +304,7 @@ Shared across all accounts:
 - `cx quota` caches TSV snapshots for 30 seconds by default so repeated checks are fast. Set `CODEX_ORBIT_QUOTA_CACHE_TTL_SECONDS=0` to disable that cache, or set a different TTL in seconds.
 - On first run after upgrading, `codex-orbit` migrates existing per-account sessions into `~/.codex-accounts/.shared/` and replaces the per-account copies with symlinks.
 - One email can belong to multiple workspaces, so `cx list` shows the default workspace plus `(+N)` when more are available. Use `cx list --verbose` to see the full workspace title list.
-- Round robin is the default because the Codex CLI does not expose a documented machine-readable quota command.
+- Round robin is the default because it keeps startup fast and the Codex CLI does not expose a documented machine-readable quota command.
 - If you want a shell to stay on one account, use `cx pin` or `cx pin-next`.
 - `cx delete` is a soft delete and archives the account under `~/.codex-accounts/.trash/`.
 - Set `CODEX_ORBIT_DEBUG=1` to print account-resolution and cooldown debug logs to stderr.

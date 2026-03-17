@@ -44,9 +44,13 @@ _codex_account_auth_file() {
 
 _codex_accounts_list() {
   local accounts_dir="$(_codex_accounts_dir)"
+  local entry=""
 
   mkdir -p "$accounts_dir"
-  find "$accounts_dir" -mindepth 1 -maxdepth 1 -type d ! -name '.*' -exec basename {} \; | sort
+  for entry in "$accounts_dir"/*(/N); do
+    [[ "${entry:t}" == .* ]] && continue
+    printf '%s\n' "${entry:t}"
+  done
 }
 
 _codex_account_exists() {
@@ -120,12 +124,14 @@ _codex_ensure_account_config() {
 }
 
 _codex_logged_in_accounts() {
-  local acct
+  local accounts_dir="$(_codex_accounts_dir)"
+  local auth_file=""
 
-  while IFS= read -r acct; do
-    [[ -n "$acct" ]] || continue
-    _codex_is_logged_in "$acct" && printf '%s\n' "$acct"
-  done < <(_codex_accounts_list)
+  mkdir -p "$accounts_dir"
+  for auth_file in "$accounts_dir"/*/auth.json(N); do
+    [[ "${auth_file:h:t}" == .* ]] && continue
+    printf '%s\n' "${auth_file:h:t}"
+  done
 }
 
 _codex_state_dir() {
@@ -190,7 +196,7 @@ _codex_all_session_pin_files() {
 _codex_get_pinned_account() {
   local pin_file="$(_codex_session_pin_file)"
   [[ -f "$pin_file" ]] || return 1
-  cat "$pin_file"
+  printf '%s\n' "$(< "$pin_file")"
 }
 
 _codex_set_pinned_account() {
@@ -210,7 +216,7 @@ _codex_clear_account_pins() {
   while IFS= read -r pin_file; do
     [[ -n "$pin_file" ]] || continue
     [[ -f "$pin_file" ]] || continue
-    if [[ "$(cat "$pin_file")" == "$acct" ]]; then
+    if [[ "$(< "$pin_file")" == "$acct" ]]; then
       rm -f "$pin_file"
     fi
   done < <(_codex_all_session_pin_files)
@@ -219,7 +225,7 @@ _codex_clear_account_pins() {
 _codex_account_alias() {
   local alias_file="$(_codex_alias_file "$1")"
   [[ -f "$alias_file" ]] || return 1
-  cat "$alias_file"
+  printf '%s\n' "$(< "$alias_file")"
 }
 
 _codex_account_display_name() {
@@ -833,8 +839,21 @@ _codex_quota_cache_file() {
   printf '%s/%s.%s.tsv\n' "$(_codex_quota_cache_dir)" "$acct" "$source"
 }
 
+_codex_quota_routing_cache_file() {
+  local source="${1:-auto}"
+  printf '%s/routing.%s.txt\n' "$(_codex_quota_cache_dir)" "$source"
+}
+
 _codex_file_mtime() {
   local path="$1"
+  local -A stat=()
+
+  if zmodload -F zsh/stat b:zstat 2>/dev/null; then
+    if zstat -H stat +mtime -- "$path" 2>/dev/null; then
+      printf '%s\n' "$stat[mtime]"
+      return 0
+    fi
+  fi
 
   /usr/bin/stat -f '%m' "$path" 2>/dev/null ||
     /usr/bin/stat -c '%Y' "$path" 2>/dev/null ||
@@ -860,7 +879,25 @@ _codex_read_cached_quota_snapshot() {
   cache_mtime="$(_codex_file_mtime "$cache_file")" || return 1
   now_epoch="$(_codex_now_epoch)"
   (( now_epoch - cache_mtime <= ttl )) || return 1
-  cat "$cache_file"
+  printf '%s\n' "$(< "$cache_file")"
+}
+
+_codex_read_cached_quota_routing() {
+  local ttl="${1:-0}"
+  local source="${2:-auto}"
+  local cache_file="$(_codex_quota_routing_cache_file "$source")"
+  local cache_mtime="" now_epoch="" acct=""
+
+  (( ttl > 0 )) || return 1
+  [[ -f "$cache_file" ]] || return 1
+  cache_mtime="$(_codex_file_mtime "$cache_file")" || return 1
+  now_epoch="$(_codex_now_epoch)"
+  (( now_epoch - cache_mtime <= ttl )) || return 1
+
+  while IFS= read -r acct; do
+    [[ -n "$acct" ]] || continue
+    printf '%s\n' "$acct"
+  done < "$cache_file"
 }
 
 _codex_write_cached_quota_snapshot() {
@@ -874,6 +911,23 @@ _codex_write_cached_quota_snapshot() {
   mkdir -p "$cache_dir"
   temp_file="$(mktemp "${TMPDIR:-/tmp}/codex-orbit-quota-cache.XXXXXX")" || return 1
   printf '%s\n' "$snapshot" > "$temp_file"
+  mv "$temp_file" "$cache_file"
+}
+
+_codex_write_cached_quota_routing() {
+  local source="${1:-auto}"
+  local cache_dir="$(_codex_quota_cache_dir)"
+  local cache_file="$(_codex_quota_routing_cache_file "$source")"
+  local temp_file="" acct=""
+  shift || true
+
+  (( $# > 0 )) || return 1
+  mkdir -p "$cache_dir"
+  temp_file="$(mktemp "${TMPDIR:-/tmp}/codex-orbit-quota-routing.XXXXXX")" || return 1
+  for acct in "$@"; do
+    [[ -n "$acct" ]] || continue
+    printf '%s\n' "$acct" >> "$temp_file"
+  done
   mv "$temp_file" "$cache_file"
 }
 
@@ -976,8 +1030,6 @@ _codex_account_quota_snapshot() {
   local source="${4:-auto}"
   local py script result="" cache_ttl=0 cached_tsv=""
 
-  _codex_ensure_account_config "$acct" || return 1
-
   if [[ "$refresh" != "1" ]]; then
     cache_ttl="$(_codex_quota_cache_ttl)"
     if cached_tsv="$(_codex_read_cached_quota_snapshot "$acct" "$cache_ttl" "$source" 2>/dev/null)"; then
@@ -989,6 +1041,8 @@ _codex_account_quota_snapshot() {
       return 0
     fi
   fi
+
+  _codex_ensure_account_config "$acct" || return 1
 
   py="$(_codex_python3)" || return 1
   script="$(_codex_quota_helper)"
@@ -1348,7 +1402,7 @@ _codex_workspace_summary() {
 _codex_cooldown_until() {
   local file="$(_codex_cooldown_file "$1")"
   [[ -f "$file" ]] || return 1
-  cat "$file"
+  printf '%s\n' "$(< "$file")"
 }
 
 _codex_clear_cooldown() {
@@ -1398,7 +1452,7 @@ _codex_account_in_cooldown() {
   local until now
 
   until="$(_codex_cooldown_until "$acct")" || return 1
-  now="$(date +%s)"
+  now="$(_codex_now_epoch)"
 
   if (( until <= now )); then
     _codex_clear_cooldown "$acct"
@@ -1446,9 +1500,9 @@ _codex_eligible_logged_in_accounts() {
 }
 
 _codex_routing_strategy() {
-  case "${CODEX_ORBIT_ROUTING:-quota}" in
-    quota|round-robin) printf '%s\n' "${CODEX_ORBIT_ROUTING:-quota}" ;;
-    *) printf 'quota\n' ;;
+  case "${CODEX_ORBIT_ROUTING:-round-robin}" in
+    quota|round-robin) printf '%s\n' "${CODEX_ORBIT_ROUTING:-round-robin}" ;;
+    *) printf 'round-robin\n' ;;
   esac
 }
 
@@ -1519,15 +1573,18 @@ _codex_preview_round_robin_account() {
 
 _codex_account_quota_rank() {
   local acct="$1"
-  local quota_source_mode="" quota_snapshot=""
+  local cache_ttl="${2:-0}"
+  local quota_source_mode="${3:-}"
+  local quota_snapshot=""
   local credits_balance="" credits_has="" credits_unlimited=""
   local primary_used="" primary_remaining="" primary_reset="" primary_window=""
   local secondary_used="" secondary_remaining="" secondary_reset="" secondary_window=""
   local primary_left="" secondary_left=""
   local sep=$'\x1f'
 
-  quota_source_mode="$(_codex_quota_default_source)"
-  quota_snapshot="$(_codex_account_quota_snapshot "$acct" tsv 0 "$quota_source_mode" 2>/dev/null || true)"
+  [[ -n "$quota_source_mode" ]] || quota_source_mode="$(_codex_quota_default_source)"
+  (( cache_ttl > 0 )) || cache_ttl="$(_codex_quota_cache_ttl)"
+  quota_snapshot="$(_codex_read_cached_quota_snapshot "$acct" "$cache_ttl" "$quota_source_mode" 2>/dev/null || true)"
   [[ -n "$quota_snapshot" ]] || return 1
 
   IFS="$sep" read -r \
@@ -1556,19 +1613,36 @@ _codex_account_quota_rank() {
 
 _codex_quota_aware_account() {
   local persist="${1:-0}"
-  local acct="" rank="" primary_left="" secondary_left=""
+  local acct="" rank="" primary_left="" secondary_left="" cached_acct=""
   local best_primary=-1 best_secondary=-1
+  local cache_ttl=0 quota_source_mode="" cached_routing=""
   local -a accounts=("${(@f)$(_codex_eligible_logged_in_accounts)}")
   local -a best_accounts=()
+  local -a cached_best_accounts=()
 
   (( ${#accounts[@]} > 0 )) || return 1
   if (( ${#accounts[@]} == 1 )); then
     _codex_select_account_from_list "$persist" "${accounts[@]}"
     return $?
   fi
+  cache_ttl="$(_codex_quota_cache_ttl)"
+  quota_source_mode="$(_codex_quota_default_source)"
+  cached_routing="$(_codex_read_cached_quota_routing "$cache_ttl" "$quota_source_mode" 2>/dev/null || true)"
+  if [[ -n "$cached_routing" ]]; then
+    while IFS= read -r cached_acct; do
+      [[ -n "$cached_acct" ]] || continue
+      if (( ${accounts[(Ie)$cached_acct]} > 0 )); then
+        cached_best_accounts+=("$cached_acct")
+      fi
+    done <<< "$cached_routing"
+    if (( ${#cached_best_accounts[@]} > 0 )); then
+      _codex_select_account_from_list "$persist" "${cached_best_accounts[@]}"
+      return $?
+    fi
+  fi
 
   for acct in "${accounts[@]}"; do
-    rank="$(_codex_account_quota_rank "$acct" 2>/dev/null || true)"
+    rank="$(_codex_account_quota_rank "$acct" "$cache_ttl" "$quota_source_mode" 2>/dev/null || true)"
     [[ -n "$rank" ]] || continue
     IFS=$'\t' read -r primary_left secondary_left <<<"$rank"
     (( primary_left > best_primary || (primary_left == best_primary && secondary_left > best_secondary) )) && {
@@ -1583,6 +1657,7 @@ _codex_quota_aware_account() {
   done
 
   (( ${#best_accounts[@]} > 0 )) || return 1
+  _codex_write_cached_quota_routing "$quota_source_mode" "${best_accounts[@]}" || true
   _codex_select_account_from_list "$persist" "${best_accounts[@]}"
 }
 
