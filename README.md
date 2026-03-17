@@ -111,6 +111,8 @@ cx
 - `cx warmup`: send a minimal prompt to start the selected account's current 5h window
 - `cx quota`: fetch live quota for one or all saved accounts
   Supports `--refresh` and `--source oauth|auto|rpc|status`
+- `cx share export`: export one or more logged-in accounts into a portable archive
+- `cx share import`: import accounts from a portable archive
 - `cx list`: open an interactive account browser in a TTY, or print saved accounts in non-interactive use
 - `cx list --plain`: print only account slot names for scripts
 - `cx list --verbose`: include workspace list, auth mode, and short account id
@@ -155,8 +157,26 @@ cx quota
 cx quota acct_001
 cx quota acct_001 --refresh
 cx quota --source auto
+cx share export
+cx share export acct_001 --output ~/Desktop/codex-orbit-share.tar.gz
+cx share import ~/Desktop/codex-orbit-share.tar.gz
 cx which
 cx resolve
+```
+
+Move saved logins to another machine:
+
+Machine A:
+
+```zsh
+cx share export --output ~/Desktop/codex-orbit-share.tar.gz
+```
+
+Machine B:
+
+```zsh
+cx share import ~/Desktop/codex-orbit-share.tar.gz
+cx list
 ```
 
 Pin different terminals to different accounts:
@@ -245,6 +265,7 @@ Shared across all accounts:
 - The direct installer places files under `~/.local/share/codex-orbit/` and links `cx` into `~/.local/bin/` by default.
 - When `~/.local/bin/` is not already on `PATH`, the direct installer appends a managed PATH block to your shell rc file unless you pass `--no-modify-shell`.
 - The direct installer installs `main` by default. Set `CODEX_ORBIT_INSTALL_REF=vX.Y.Z` when you want to pin a release tag explicitly.
+- `cx share export` includes portable login files only: per-account `auth.json` and `config.toml`. It does not export cooldowns, pins, trash, or other device-local state.
 - `cx list` reads email, plan, default workspace, and workspace count from the saved `id_token` when `python3` is available.
 - `cx warmup` is manual only. It sends a minimal non-interactive prompt to the selected account to deliberately start that account's current 5h window, and temporarily disables configured MCP servers for that warmup run.
 - `cx warmup` skips the post-run quota refresh by default for speed. Use `cx warmup --show-quota` if you want it immediately.

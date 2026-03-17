@@ -151,6 +151,7 @@ rm -f "$target_internal_bin"
 rm -f "$target_libexec/codex-orbit.zsh"
 rm -f "$target_libexec/codex-orbit-quota.py"
 rm -f "$target_libexec/codex-orbit-shared-home.py"
+rm -f "$target_libexec/codex-orbit-share.py"
 rmdir "$target_libexec" 2>/dev/null || true
 rmdir "$install_dir/bin" 2>/dev/null || true
 rmdir "$install_dir" 2>/dev/null || true

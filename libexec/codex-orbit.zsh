@@ -273,6 +273,10 @@ _codex_shared_home_helper() {
   printf '%s/codex-orbit-shared-home.py\n' "$CODEX_ORBIT_LIBEXEC_DIR"
 }
 
+_codex_share_helper() {
+  printf '%s/codex-orbit-share.py\n' "$CODEX_ORBIT_LIBEXEC_DIR"
+}
+
 _codex_prepare_shared_sessions() {
   local py script
 
@@ -291,6 +295,141 @@ _codex_prepare_account_home() {
 
   _codex_ensure_account_config "$acct" || return 1
   _codex_prepare_shared_sessions || return 1
+}
+
+_codex_default_share_archive_path() {
+  printf '%s/codex-orbit-share-%s.tar.gz\n' "$PWD" "$(date '+%Y%m%d%H%M%S')"
+}
+
+_codex_share_export() {
+  local py script output="" arg acct archive_path=""
+  local export_all=0
+  local -a selected_accounts=() helper_args=()
+
+  py="$(_codex_python3)" || {
+    echo "python3 is required for cx share export"
+    return 1
+  }
+  script="$(_codex_share_helper)"
+  [[ -f "$script" ]] || {
+    echo "share helper not found"
+    return 1
+  }
+
+  while (( $# > 0 )); do
+    arg="$1"
+    case "$arg" in
+      --output)
+        if (( $# < 2 )); then
+          echo "Usage: cx share export [account ...|--all] [--output <archive.tar.gz>]"
+          return 1
+        fi
+        output="$2"
+        shift 2
+        ;;
+      --all)
+        export_all=1
+        shift
+        ;;
+      --help|-h)
+        echo "Usage: cx share export [account ...|--all] [--output <archive.tar.gz>]"
+        echo "Default: exports all logged-in accounts into ./codex-orbit-share-YYYYMMDDHHMMSS.tar.gz"
+        return 0
+        ;;
+      *)
+        selected_accounts+=("$arg")
+        shift
+        ;;
+    esac
+  done
+
+  if (( export_all )) && (( ${#selected_accounts[@]} > 0 )); then
+    echo "Usage: cx share export [account ...|--all] [--output <archive.tar.gz>]"
+    return 1
+  fi
+
+  if (( export_all )) || (( ${#selected_accounts[@]} == 0 )); then
+    while IFS= read -r acct; do
+      [[ -n "$acct" ]] || continue
+      selected_accounts+=("$acct")
+    done < <(_codex_logged_in_accounts)
+  fi
+
+  if (( ${#selected_accounts[@]} == 0 )); then
+    echo "No logged-in Codex accounts found. Run: cx login"
+    return 1
+  fi
+
+  for acct in "${selected_accounts[@]}"; do
+    if ! _codex_is_logged_in "$acct"; then
+      echo "No logged-in Codex account: $acct"
+      return 1
+    fi
+    _codex_ensure_account_config "$acct" || return 1
+  done
+
+  [[ -n "$output" ]] || output="$(_codex_default_share_archive_path)"
+  helper_args=(export --accounts-dir "$(_codex_accounts_dir)" --output "$output")
+  for acct in "${selected_accounts[@]}"; do
+    helper_args+=(--account "$acct")
+  done
+
+  if ! archive_path="$("$py" "$script" "${helper_args[@]}")"; then
+    return 1
+  fi
+
+  printf 'Exported %d account(s) to %s\n' "${#selected_accounts[@]}" "$archive_path"
+  printf 'Import on the other machine with: cx share import %s\n' "$archive_path"
+}
+
+_codex_share_import() {
+  local py script archive_path="" mapping="" source_acct="" target_acct=""
+  local imported_count=0
+
+  py="$(_codex_python3)" || {
+    echo "python3 is required for cx share import"
+    return 1
+  }
+  script="$(_codex_share_helper)"
+  [[ -f "$script" ]] || {
+    echo "share helper not found"
+    return 1
+  }
+
+  case "${1:-}" in
+    "")
+      echo "Usage: cx share import <archive.tar.gz>"
+      return 1
+      ;;
+    --help|-h)
+      echo "Usage: cx share import <archive.tar.gz>"
+      return 0
+      ;;
+  esac
+
+  archive_path="$1"
+  shift || true
+  if (( $# > 0 )); then
+    echo "Usage: cx share import <archive.tar.gz>"
+    return 1
+  fi
+
+  if ! mapping="$("$py" "$script" import --accounts-dir "$(_codex_accounts_dir)" --input "$archive_path")"; then
+    return 1
+  fi
+
+  while IFS=$'\t' read -r source_acct target_acct; do
+    [[ -n "$target_acct" ]] || continue
+    _codex_prepare_account_home "$target_acct" || return 1
+    imported_count=$((imported_count + 1))
+    if [[ "$source_acct" == "$target_acct" ]]; then
+      printf 'Imported: %s\n' "$target_acct"
+    else
+      printf 'Imported: %s -> %s\n' "$source_acct" "$target_acct"
+    fi
+  done <<< "$mapping"
+
+  printf 'Imported %d account(s). Run: cx list\n' "$imported_count"
 }
 
 _codex_quota_cache_dir() {
@@ -1372,6 +1511,12 @@ cx() {
         mode="quota"
         shift
         ;;
+      share)
+        mode="share"
+        shift
+        codex_args+=("$@")
+        break
+        ;;
       resolve)
         mode="resolve"
         shift
@@ -1396,6 +1541,8 @@ Usage: cx [codex args...]
        cx which
        cx warmup [account] [--show-quota]
        cx quota [account] [--json] [--refresh] [--source oauth|auto|rpc|status]
+       cx share export [account ...|--all] [--output <archive.tar.gz>]
+       cx share import <archive.tar.gz>
        cx resolve
        cx cooldown
        cx cooldown <account> <duration>
@@ -1416,6 +1563,8 @@ Commands:
   cx which             Explain which account would launch next.
   cx warmup            Send a minimal prompt to start the selected account's current 5h window.
   cx quota             Fetch live Codex quota. Defaults to the fast OAuth path unless overridden.
+  cx share export      Export one or more logged-in accounts into a portable archive.
+  cx share import      Import accounts from a portable archive created by cx share export.
   cx resolve           Print only the account that would launch next.
   cx cooldown          List active cooldowns.
   cx cooldown <acct>   Put an account on cooldown using durations like 30m, 5h, 1d.
@@ -1436,6 +1585,9 @@ Examples:
   cx quota acct_001
   cx quota acct_001 --refresh
   cx quota --source auto
+  cx share export
+  cx share export acct_001 --output ~/Desktop/codex-orbit-share.tar.gz
+  cx share import ~/Desktop/codex-orbit-share.tar.gz
   cx resolve
   cx cooldown acct_001 5h
   cx cooldown clear acct_001
@@ -1793,6 +1945,37 @@ EOF
 
     echo "Cooldown set: $account until $(_codex_format_timestamp "$cooldown_note")"
     return 0
+  fi
+
+  if [[ "$mode" == "share" ]]; then
+    local -a share_args=()
+    local share_idx=0
+
+    arg="${codex_args[1]:-}"
+    for (( share_idx = 2; share_idx <= ${#codex_args[@]}; share_idx++ )); do
+      share_args+=("${codex_args[$share_idx]}")
+    done
+
+    case "$arg" in
+      export)
+        _codex_share_export "${share_args[@]}"
+        return $?
+        ;;
+      import)
+        _codex_share_import "${share_args[@]}"
+        return $?
+        ;;
+      ""|--help|-h)
+        echo "Usage: cx share export [account ...|--all] [--output <archive.tar.gz>]"
+        echo "       cx share import <archive.tar.gz>"
+        return 0
+        ;;
+      *)
+        echo "Usage: cx share export [account ...|--all] [--output <archive.tar.gz>]"
+        echo "       cx share import <archive.tar.gz>"
+        return 1
+        ;;
+    esac
   fi
 
   if [[ "$mode" == "resolve" || "$mode" == "which" ]]; then

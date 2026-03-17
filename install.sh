@@ -243,6 +243,7 @@ install -m 0755 "$source_dir/bin/cx" "$target_internal_bin/cx"
 install -m 0644 "$source_dir/libexec/codex-orbit.zsh" "$target_libexec/codex-orbit.zsh"
 install -m 0644 "$source_dir/libexec/codex-orbit-quota.py" "$target_libexec/codex-orbit-quota.py"
 install -m 0644 "$source_dir/libexec/codex-orbit-shared-home.py" "$target_libexec/codex-orbit-shared-home.py"
+install -m 0644 "$source_dir/libexec/codex-orbit-share.py" "$target_libexec/codex-orbit-share.py"
 ln -s "$target_internal_bin/cx" "$target_bin"
 
 say "Installed codex-orbit to $install_dir"
