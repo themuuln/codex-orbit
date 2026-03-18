@@ -93,6 +93,26 @@ remove_shell_rc_path_block() {
   mv "$tmp_file" "$shell_rc"
 }
 
+remove_shell_rc_completion_block() {
+  shell_rc="$1"
+  begin_marker="# >>> codex-orbit completions >>>"
+  end_marker="# <<< codex-orbit completions <<<"
+
+  [ -f "$shell_rc" ] || return 0
+
+  tmp_file="$(mktemp "${TMPDIR:-/tmp}/codex-orbit-uninstall.XXXXXX")" || return 1
+  if ! awk -v begin="$begin_marker" -v end="$end_marker" '
+    $0 == begin { skipping = 1; next }
+    $0 == end { skipping = 0; next }
+    skipping != 1 { print }
+  ' "$shell_rc" > "$tmp_file"; then
+    rm -f "$tmp_file"
+    return 1
+  fi
+
+  mv "$tmp_file" "$shell_rc"
+}
+
 say() {
   printf '%s\n' "$*"
 }
@@ -141,6 +161,7 @@ done
 target_bin="$bin_dir/cx"
 target_internal_bin="$install_dir/bin/cx"
 target_libexec="$install_dir/libexec"
+target_metadata="$install_dir/install-metadata"
 
 if [ -L "$target_bin" ] || [ "$force" -eq 1 ]; then
   rm -f "$target_bin"
@@ -148,13 +169,18 @@ fi
 
 rm -f "$target_internal_bin"
 rm -f "$target_libexec/codex-orbit.zsh"
+rm -f "$target_libexec/codex-orbit-state.zsh"
+rm -f "$target_libexec/codex-orbit-admin.zsh"
 rm -f "$target_libexec/codex-orbit-quota.py"
 rm -f "$target_libexec/codex-orbit-shared-home.py"
 rm -f "$target_libexec/codex-orbit-share.py"
+rm -f "$target_libexec/codex-orbit-daemon.py"
+rm -f "$target_metadata"
 rmdir "$target_libexec" 2>/dev/null || true
 rmdir "$install_dir/bin" 2>/dev/null || true
 rmdir "$install_dir" 2>/dev/null || true
 remove_shell_rc_path_block "$shell_rc"
+remove_shell_rc_completion_block "$shell_rc"
 
 say "Removed codex-orbit from $install_dir"
 say "Removed cx from $target_bin"

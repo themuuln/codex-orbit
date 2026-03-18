@@ -63,6 +63,25 @@ default_install_dir() {
   printf '%s\n' "$HOME/.local/share/codex-orbit"
 }
 
+detect_source_version() {
+  src_dir="$1"
+  requested_ref="$2"
+
+  if [ -d "$src_dir/.git" ] && command -v git >/dev/null 2>&1; then
+    git -C "$src_dir" rev-parse HEAD 2>/dev/null && return 0
+  fi
+
+  if command -v curl >/dev/null 2>&1; then
+    resolved_version="$(curl -fsSL "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/commits/${requested_ref}" 2>/dev/null | sed -n 's/^[[:space:]]*\"sha\":[[:space:]]*\"\([0-9a-f]\{40\}\)\".*/\1/p' | head -n 1 || true)"
+    if [ -n "$resolved_version" ]; then
+      printf '%s\n' "$resolved_version"
+      return 0
+    fi
+  fi
+
+  printf '%s\n' "$requested_ref"
+}
+
 download_source() {
   ref="$1"
   tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/codex-orbit-install.XXXXXX")"
@@ -225,10 +244,14 @@ fi
 
 [ -f "$source_dir/bin/cx" ] || fail "missing bin/cx in source tree"
 [ -f "$source_dir/libexec/codex-orbit.zsh" ] || fail "missing libexec/codex-orbit.zsh in source tree"
+[ -f "$source_dir/libexec/codex-orbit-state.zsh" ] || fail "missing libexec/codex-orbit-state.zsh in source tree"
+[ -f "$source_dir/libexec/codex-orbit-admin.zsh" ] || fail "missing libexec/codex-orbit-admin.zsh in source tree"
+[ -f "$source_dir/libexec/codex-orbit-daemon.py" ] || fail "missing libexec/codex-orbit-daemon.py in source tree"
 
 target_bin="$bin_dir/cx"
 target_libexec="$install_dir/libexec"
 target_internal_bin="$install_dir/bin"
+target_metadata="$install_dir/install-metadata"
 
 mkdir -p "$bin_dir" "$target_internal_bin" "$target_libexec"
 
@@ -241,9 +264,19 @@ fi
 
 install -m 0755 "$source_dir/bin/cx" "$target_internal_bin/cx"
 install -m 0644 "$source_dir/libexec/codex-orbit.zsh" "$target_libexec/codex-orbit.zsh"
+install -m 0644 "$source_dir/libexec/codex-orbit-state.zsh" "$target_libexec/codex-orbit-state.zsh"
+install -m 0644 "$source_dir/libexec/codex-orbit-admin.zsh" "$target_libexec/codex-orbit-admin.zsh"
 install -m 0644 "$source_dir/libexec/codex-orbit-quota.py" "$target_libexec/codex-orbit-quota.py"
 install -m 0644 "$source_dir/libexec/codex-orbit-shared-home.py" "$target_libexec/codex-orbit-shared-home.py"
 install -m 0644 "$source_dir/libexec/codex-orbit-share.py" "$target_libexec/codex-orbit-share.py"
+install -m 0644 "$source_dir/libexec/codex-orbit-daemon.py" "$target_libexec/codex-orbit-daemon.py"
+install_version="$(detect_source_version "$source_dir" "$ref")"
+installed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+{
+  printf 'ref=%s\n' "$ref"
+  printf 'version=%s\n' "$install_version"
+  printf 'installed_at=%s\n' "$installed_at"
+} > "$target_metadata"
 ln -s "$target_internal_bin/cx" "$target_bin"
 
 say "Installed codex-orbit to $install_dir"
@@ -269,5 +302,5 @@ esac
 say ""
 say "Next steps:"
 say "  1. Ensure the official codex CLI is installed and on PATH."
-say "  2. Run: cx doctor"
+say "  2. Run: cx init --shell ${SHELL##*/}"
 say "  3. Run: cx login"

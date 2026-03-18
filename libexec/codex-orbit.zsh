@@ -10,6 +10,7 @@ codex_account() {
     return 1
   fi
 
+  _codex_ensure_state_schema || return 1
   resolved_acct="$(_codex_resolve_account_ref "$acct" 2>/dev/null || true)"
   if [[ -z "$resolved_acct" || ! -d "$HOME/.codex-accounts/$resolved_acct" ]]; then
     echo "unknown account: $acct"
@@ -18,7 +19,7 @@ codex_account() {
   fi
 
   _codex_prepare_account_home "$resolved_acct" || return 1
-  CODEX_HOME="$HOME/.codex-accounts/$resolved_acct" codex "$@"
+  _codex_run_codex_for_account "$resolved_acct" "$@"
 }
 
 _codex_debug_enabled() {
@@ -36,6 +37,113 @@ _codex_accounts_dir() {
 
 _codex_account_dir() {
   printf '%s/%s\n' "$(_codex_accounts_dir)" "$1"
+}
+
+_codex_locks_dir() {
+  printf '%s/.state/locks\n' "$(_codex_accounts_dir)"
+}
+
+_codex_lock_wait_seconds() {
+  printf '%s\n' "${CODEX_ORBIT_LOCK_TIMEOUT_SECONDS:-10}"
+}
+
+_codex_lock_name_path() {
+  local lock_name="${1//[^A-Za-z0-9._-]/_}"
+  printf '%s/%s.lock\n' "$(_codex_locks_dir)" "$lock_name"
+}
+
+_codex_lock_is_held() {
+  [[ ":${CODEX_ORBIT_HELD_LOCKS:-}:" == *":$1:"* ]]
+}
+
+_codex_mark_lock_held() {
+  local lock_name="$1"
+  if ! _codex_lock_is_held "$lock_name"; then
+    CODEX_ORBIT_HELD_LOCKS="${CODEX_ORBIT_HELD_LOCKS:-}:$lock_name"
+  fi
+}
+
+_codex_unmark_lock_held() {
+  local lock_name="$1"
+  CODEX_ORBIT_HELD_LOCKS="${CODEX_ORBIT_HELD_LOCKS//:$lock_name/}"
+}
+
+_codex_write_file_atomic() {
+  emulate -L zsh
+  local target="$1"
+  local content="${2-}"
+  local target_dir="${target:h}"
+  local temp_file="${target}.tmp.$$.$RANDOM"
+
+  mkdir -p "$target_dir" || return 1
+  umask 077
+  print -r -- "$content" > "$temp_file" || {
+    rm -f "$temp_file"
+    return 1
+  }
+  mv "$temp_file" "$target"
+}
+
+_codex_acquire_lock() {
+  local lock_name="$1"
+  local lock_dir="$(_codex_lock_name_path "$lock_name")"
+  local owner_file="$lock_dir/pid"
+  local now=0 start=0 timeout=0 owner_pid=""
+
+  mkdir -p "$(_codex_locks_dir)" || return 1
+  timeout="$(_codex_lock_wait_seconds)"
+  start=$SECONDS
+
+  while true; do
+    if mkdir "$lock_dir" 2>/dev/null; then
+      umask 077
+      print -r -- "$$" >| "$owner_file" || {
+        rm -rf "$lock_dir"
+        return 1
+      }
+      return 0
+    fi
+
+    owner_pid="$(< "$owner_file" 2>/dev/null || true)"
+    if [[ -n "$owner_pid" && "$owner_pid" =~ ^[0-9]+$ ]]; then
+      if ! kill -0 "$owner_pid" 2>/dev/null; then
+        rm -rf "$lock_dir"
+        continue
+      fi
+    elif [[ ! -e "$owner_file" ]]; then
+      sleep 0.05
+      continue
+    fi
+
+    now=$SECONDS
+    if (( now - start >= timeout )); then
+      echo "Timed out waiting for lock: $lock_name" >&2
+      return 1
+    fi
+    sleep 0.05
+  done
+}
+
+_codex_release_lock() {
+  rm -rf "$(_codex_lock_name_path "$1")"
+}
+
+_codex_with_lock() {
+  local lock_name="$1"
+  shift || true
+
+  if _codex_lock_is_held "$lock_name"; then
+    "$@"
+    return $?
+  fi
+
+  _codex_acquire_lock "$lock_name" || return 1
+  _codex_mark_lock_held "$lock_name"
+  "$@"
+  local rc=$?
+  _codex_unmark_lock_held "$lock_name"
+  _codex_release_lock "$lock_name"
+  return "$rc"
 }
 
 _codex_account_auth_file() {
@@ -75,6 +183,20 @@ _codex_next_account_name() {
   done < <(_codex_accounts_list)
 
   printf 'acct_%03d\n' $((last_id + 1))
+}
+
+_codex_reserve_next_account() {
+  local account=""
+
+  _codex_with_lock state _codex_reserve_next_account_impl
+}
+
+_codex_reserve_next_account_impl() {
+  local account=""
+
+  account="$(_codex_next_account_name)" || return 1
+  mkdir -p "$(_codex_account_dir "$account")" || return 1
+  printf '%s\n' "$account"
 }
 
 _codex_ensure_account_config() {
@@ -187,6 +309,10 @@ _codex_session_pin_file() {
   printf '%s/session_%s_pinned_account\n' "$state_dir" "$(_codex_session_key)"
 }
 
+_codex_last_account_file() {
+  printf '%s/last_account\n' "$(_codex_state_dir)"
+}
+
 _codex_all_session_pin_files() {
   local state_dir="$(_codex_state_dir)"
   [[ -d "$state_dir" ]] || return 0
@@ -201,12 +327,12 @@ _codex_get_pinned_account() {
 
 _codex_set_pinned_account() {
   local pin_file="$(_codex_session_pin_file)"
-  print -r -- "$1" > "$pin_file"
+  _codex_with_lock state _codex_write_file_atomic "$pin_file" "$1"
 }
 
 _codex_clear_pinned_account() {
   local pin_file="$(_codex_session_pin_file)"
-  rm -f "$pin_file"
+  _codex_with_lock state rm -f "$pin_file"
 }
 
 _codex_clear_account_pins() {
@@ -220,6 +346,10 @@ _codex_clear_account_pins() {
       rm -f "$pin_file"
     fi
   done < <(_codex_all_session_pin_files)
+}
+
+_codex_set_last_account() {
+  _codex_with_lock state _codex_write_file_atomic "$(_codex_last_account_file)" "$1"
 }
 
 _codex_account_alias() {
@@ -302,6 +432,10 @@ _codex_resolve_account_ref() {
 }
 
 _codex_set_account_alias() {
+  _codex_with_lock state _codex_set_account_alias_impl "$@"
+}
+
+_codex_set_account_alias_impl() {
   local acct="$1"
   local alias_name="$2"
   local existing=""
@@ -326,11 +460,11 @@ _codex_set_account_alias() {
   fi
 
   mkdir -p "$(_codex_alias_dir)"
-  print -r -- "$alias_name" > "$(_codex_alias_file "$acct")"
+  _codex_write_file_atomic "$(_codex_alias_file "$acct")" "$alias_name"
 }
 
 _codex_clear_account_alias() {
-  rm -f "$(_codex_alias_file "$1")"
+  _codex_with_lock state rm -f "$(_codex_alias_file "$1")"
 }
 
 _codex_mask_email() {
@@ -437,6 +571,10 @@ _codex_default_config_share_archive_path() {
 }
 
 _codex_share_export() {
+  _codex_with_lock state _codex_share_export_impl "$@"
+}
+
+_codex_share_export_impl() {
   local py script output="" arg acct archive_path="" resolved_acct=""
   local export_all=0
   local -a selected_accounts=() helper_args=()
@@ -578,6 +716,10 @@ _codex_share_config_export() {
 }
 
 _codex_share_import() {
+  _codex_with_lock state _codex_share_import_impl "$@"
+}
+
+_codex_share_import_impl() {
   local py script archive_path="" mapping="" source_acct="" target_acct=""
   local imported_count=0
 
@@ -761,6 +903,252 @@ _codex_update_self() {
       ;;
   esac
 }
+
+_codex_count_lines() {
+  local count=0 line=""
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    count=$((count + 1))
+  done
+  printf '%s\n' "$count"
+}
+
+_codex_accounts_total() {
+  _codex_accounts_list | _codex_count_lines
+}
+
+_codex_logged_in_accounts_total() {
+  _codex_logged_in_accounts | _codex_count_lines
+}
+
+_codex_active_cooldowns_total() {
+  _codex_active_cooldowns | _codex_count_lines
+}
+
+_codex_disabled_accounts_total() {
+  local acct="" count=0
+  while IFS= read -r acct; do
+    [[ -n "$acct" ]] || continue
+    _codex_account_disabled "$acct" || continue
+    count=$((count + 1))
+  done < <(_codex_accounts_list)
+  printf '%s\n' "$count"
+}
+
+_codex_aliases_total() {
+  local alias_name="" acct="" count=0
+
+  while IFS=$'\t' read -r alias_name acct; do
+    [[ -n "$alias_name" && -n "$acct" ]] || continue
+    count=$((count + 1))
+  done < <(_codex_list_account_aliases 2>/dev/null || true)
+
+  printf '%s\n' "$count"
+}
+
+_codex_archived_accounts_total() {
+  find "$(_codex_trash_dir)" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | _codex_count_lines
+}
+
+_codex_support_bundle_default_path() {
+  printf '%s/codex-orbit-support-%s.tar.gz\n' "$PWD" "$(date '+%Y%m%d%H%M%S')"
+}
+
+_codex_doctor_text() {
+  local doctor_exit=0
+  local accounts_count logged_in_count cooldown_count archived_count
+
+  if command -v codex >/dev/null 2>&1; then
+    printf '[ok] codex: %s\n' "$(command -v codex)"
+  else
+    echo "[fail] codex: missing from PATH"
+    doctor_exit=1
+  fi
+
+  if command -v rg >/dev/null 2>&1; then
+    printf '[ok] rg: %s\n' "$(command -v rg)"
+  else
+    echo "[fail] rg: missing from PATH"
+    doctor_exit=1
+  fi
+
+  if command -v fzf >/dev/null 2>&1; then
+    printf '[ok] fzf: %s\n' "$(command -v fzf)"
+  else
+    echo "[warn] fzf: optional, picker falls back to numbered prompts"
+  fi
+
+  if _codex_python3 >/dev/null 2>&1; then
+    printf '[ok] python3: %s\n' "$(_codex_python3)"
+  else
+    echo "[warn] python3: required for shared-session migration, plus email/workspace metadata and live quota in cx list/cx which/cx quota"
+  fi
+
+  mkdir -p "$(_codex_accounts_dir)" "$(_codex_state_dir)" "$(_codex_trash_dir)" "$(_codex_cooldown_dir)"
+  if [[ -w "$(_codex_accounts_dir)" && -w "$(_codex_state_dir)" ]]; then
+    printf '[ok] state: %s\n' "$(_codex_accounts_dir)"
+  else
+    echo "[fail] state: ~/.codex-accounts is not writable"
+    doctor_exit=1
+  fi
+
+  accounts_count="$(_codex_accounts_total)"
+  logged_in_count="$(_codex_logged_in_accounts_total)"
+  cooldown_count="$(_codex_active_cooldowns_total)"
+  archived_count="$(_codex_archived_accounts_total)"
+
+  printf '[info] accounts: %s total, %s logged in\n' "$accounts_count" "$logged_in_count"
+  printf '[info] cooldowns: %s active\n' "$cooldown_count"
+  printf '[info] routing: %s\n' "$(_codex_routing_strategy)"
+  printf '[info] install: %s\n' "$(_codex_current_install_method)"
+  printf '[info] archived: %s\n' "$archived_count"
+
+  if [[ -f "$HOME/.codex/config.toml" ]]; then
+    echo "[ok] base config: ~/.codex/config.toml found"
+  else
+    echo "[warn] base config: ~/.codex/config.toml not found, new accounts start with an empty config"
+  fi
+
+  return "$doctor_exit"
+}
+
+_codex_doctor_json() {
+  local py=""
+  local codex_path="" rg_path="" fzf_path="" python_path=""
+  local accounts_count logged_in_count cooldown_count disabled_count alias_count archived_count
+  local base_config_present=0 state_writable=0
+
+  py="$(_codex_python3)" || {
+    echo "python3 is required for cx doctor --json"
+    return 1
+  }
+
+  mkdir -p "$(_codex_accounts_dir)" "$(_codex_state_dir)" "$(_codex_trash_dir)" "$(_codex_cooldown_dir)"
+  accounts_count="$(_codex_accounts_total)"
+  logged_in_count="$(_codex_logged_in_accounts_total)"
+  cooldown_count="$(_codex_active_cooldowns_total)"
+  disabled_count="$(_codex_disabled_accounts_total)"
+  alias_count="$(_codex_aliases_total)"
+  archived_count="$(_codex_archived_accounts_total)"
+
+  [[ -f "$HOME/.codex/config.toml" ]] && base_config_present=1
+  [[ -w "$(_codex_accounts_dir)" && -w "$(_codex_state_dir)" ]] && state_writable=1
+
+  codex_path="$(command -v codex 2>/dev/null || true)"
+  rg_path="$(command -v rg 2>/dev/null || true)"
+  fzf_path="$(command -v fzf 2>/dev/null || true)"
+  python_path="$(_codex_python3 2>/dev/null || true)"
+
+  DOCTOR_GENERATED_AT="$(_codex_now_epoch)" \
+  DOCTOR_INSTALL_METHOD="$(_codex_current_install_method)" \
+  DOCTOR_ROUTING="$(_codex_routing_strategy)" \
+  DOCTOR_ACCOUNTS="$accounts_count" \
+  DOCTOR_LOGGED_IN="$logged_in_count" \
+  DOCTOR_COOLDOWNS="$cooldown_count" \
+  DOCTOR_DISABLED="$disabled_count" \
+  DOCTOR_ALIASES="$alias_count" \
+  DOCTOR_ARCHIVED="$archived_count" \
+  DOCTOR_BASE_CONFIG="$base_config_present" \
+  DOCTOR_STATE_WRITABLE="$state_writable" \
+  DOCTOR_ACCOUNTS_DIR="$(_codex_accounts_dir)" \
+  DOCTOR_STATE_DIR="$(_codex_state_dir)" \
+  DOCTOR_CODEX_PATH="$codex_path" \
+  DOCTOR_RG_PATH="$rg_path" \
+  DOCTOR_FZF_PATH="$fzf_path" \
+  DOCTOR_PYTHON_PATH="$python_path" \
+  "$py" - <<'PY'
+import json
+import os
+
+def env_int(name: str) -> int:
+    return int(os.environ.get(name, "0") or "0")
+
+payload = {
+    "generated_at_epoch": env_int("DOCTOR_GENERATED_AT"),
+    "install_method": os.environ.get("DOCTOR_INSTALL_METHOD", ""),
+    "routing_strategy": os.environ.get("DOCTOR_ROUTING", ""),
+    "paths": {
+        "accounts_dir": os.environ.get("DOCTOR_ACCOUNTS_DIR", ""),
+        "state_dir": os.environ.get("DOCTOR_STATE_DIR", ""),
+        "codex": os.environ.get("DOCTOR_CODEX_PATH", ""),
+        "ripgrep": os.environ.get("DOCTOR_RG_PATH", ""),
+        "fzf": os.environ.get("DOCTOR_FZF_PATH", ""),
+        "python3": os.environ.get("DOCTOR_PYTHON_PATH", ""),
+    },
+    "counts": {
+        "accounts": env_int("DOCTOR_ACCOUNTS"),
+        "logged_in": env_int("DOCTOR_LOGGED_IN"),
+        "cooldowns": env_int("DOCTOR_COOLDOWNS"),
+        "disabled": env_int("DOCTOR_DISABLED"),
+        "aliases": env_int("DOCTOR_ALIASES"),
+        "archived": env_int("DOCTOR_ARCHIVED"),
+    },
+    "checks": {
+        "base_config_present": bool(env_int("DOCTOR_BASE_CONFIG")),
+        "state_writable": bool(env_int("DOCTOR_STATE_WRITABLE")),
+        "codex_in_path": bool(os.environ.get("DOCTOR_CODEX_PATH")),
+        "ripgrep_in_path": bool(os.environ.get("DOCTOR_RG_PATH")),
+        "fzf_in_path": bool(os.environ.get("DOCTOR_FZF_PATH")),
+        "python3_in_path": bool(os.environ.get("DOCTOR_PYTHON_PATH")),
+    },
+}
+print(json.dumps(payload, indent=2, sort_keys=True))
+PY
+}
+
+_codex_write_support_bundle() {
+  local output="${1:-}"
+  local temp_dir="" doctor_path="" aliases_path="" cooldowns_path="" accounts_path="" routing_path="" install_path="" doctor_json=""
+  local rc=0
+
+  command -v tar >/dev/null 2>&1 || {
+    echo "tar is required for cx support"
+    return 1
+  }
+
+  [[ -n "$output" ]] || output="$(_codex_support_bundle_default_path)"
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/codex-orbit-support.XXXXXX")" || return 1
+  doctor_path="$temp_dir/doctor.txt"
+  aliases_path="$temp_dir/aliases.tsv"
+  cooldowns_path="$temp_dir/cooldowns.tsv"
+  accounts_path="$temp_dir/accounts.tsv"
+  routing_path="$temp_dir/routing.txt"
+  install_path="$temp_dir/install.txt"
+
+  _codex_doctor_text > "$doctor_path" || rc=$?
+  if doctor_json="$(_codex_doctor_json 2>/dev/null || true)"; then
+    if [[ -n "$doctor_json" ]]; then
+      print -r -- "$doctor_json" > "$temp_dir/doctor.json"
+    fi
+  fi
+
+  _codex_list_account_aliases > "$aliases_path" 2>/dev/null || : > "$aliases_path"
+  _codex_active_cooldowns > "$cooldowns_path" 2>/dev/null || : > "$cooldowns_path"
+  while IFS= read -r acct; do
+    [[ -n "$acct" ]] || continue
+    printf '%s\t%s\n' "$acct" "$(_codex_account_status_value "$acct")"
+  done > "$accounts_path" < <(_codex_accounts_list)
+  {
+    printf 'routing=%s\n' "$(_codex_routing_strategy)"
+    printf 'resolve=%s\n' "$(_codex_resolve_account_selection 0 2>/dev/null || printf 'unavailable')"
+  } > "$routing_path"
+  {
+    printf 'install_method=%s\n' "$(_codex_current_install_method)"
+    printf 'libexec_dir=%s\n' "$CODEX_ORBIT_LIBEXEC_DIR"
+    printf 'cx_path=%s\n' "$(command -v cx 2>/dev/null || true)"
+  } > "$install_path"
+
+  tar -czf "$output" -C "$temp_dir" . || {
+    rm -rf "$temp_dir"
+    return 1
+  }
+  rm -rf "$temp_dir"
+  printf '%s\n' "$output"
+  return "$rc"
+}
+
+source "$CODEX_ORBIT_LIBEXEC_DIR/codex-orbit-state.zsh"
+source "$CODEX_ORBIT_LIBEXEC_DIR/codex-orbit-admin.zsh"
 
 _codex_wait_for_pids() {
   local message="${1:-Working}"
@@ -1061,12 +1449,20 @@ _codex_mcp_disable_args() {
 
 _codex_warmup_account() {
   local acct="$1"
-  local output_file result prompt
+  local output_file error_file capture_file result prompt
   local -a mcp_disable_args=()
 
   _codex_prepare_account_home "$acct" || return 1
   prompt="$(_codex_warmup_prompt)"
   output_file="$(mktemp "${TMPDIR:-/tmp}/codex-orbit-warmup.XXXXXX")" || return 1
+  error_file="$(mktemp "${TMPDIR:-/tmp}/codex-orbit-warmup-err.XXXXXX")" || {
+    rm -f "$output_file"
+    return 1
+  }
+  capture_file="$(mktemp "${TMPDIR:-/tmp}/codex-orbit-warmup-capture.XXXXXX")" || {
+    rm -f "$output_file" "$error_file"
+    return 1
+  }
   mcp_disable_args=("${(@f)$(_codex_mcp_disable_args "$acct")}")
 
   if ! CODEX_HOME="$(_codex_account_dir "$acct")" codex "${mcp_disable_args[@]}" -a never -s read-only exec \
@@ -1075,13 +1471,17 @@ _codex_warmup_account() {
     --color never \
     -C "$HOME" \
     -o "$output_file" \
-    "$prompt"; then
-    rm -f "$output_file"
+    "$prompt" 2>"$error_file"; then
+    cat "$output_file" "$error_file" > "$capture_file"
+    _codex_maybe_auto_disable_account_from_capture "$acct" "$capture_file" || true
+    [[ -s "$output_file" ]] && cat "$output_file" >&2
+    [[ -s "$error_file" ]] && cat "$error_file" >&2
+    rm -f "$output_file" "$error_file" "$capture_file"
     return 1
   fi
 
   result="$(tr -d '\r' < "$output_file" | tail -n 1)"
-  rm -f "$output_file"
+  rm -f "$output_file" "$error_file" "$capture_file"
 
   if [[ -n "$result" ]]; then
     printf '%s\n' "$result"
@@ -1385,20 +1785,33 @@ _codex_cooldown_until() {
 }
 
 _codex_clear_cooldown() {
-  rm -f "$(_codex_cooldown_file "$1")"
+  _codex_with_lock state rm -f "$(_codex_cooldown_file "$1")"
 }
 
 _codex_account_disabled() {
   [[ -f "$(_codex_disabled_file "$1")" ]]
 }
 
+_codex_account_disabled_reason() {
+  local file="$(_codex_disabled_file "$1")"
+  [[ -s "$file" ]] || return 1
+  printf '%s\n' "$(< "$file")"
+}
+
 _codex_disable_account() {
+  local acct="$1"
+  local reason="${2:-}"
+  local file="$(_codex_disabled_file "$acct")"
   mkdir -p "$(_codex_disabled_dir)"
-  : > "$(_codex_disabled_file "$1")"
+  if [[ -n "$reason" ]]; then
+    _codex_with_lock state _codex_write_file_atomic "$file" "$reason"
+  else
+    _codex_with_lock state _codex_write_file_atomic "$file" ""
+  fi
 }
 
 _codex_enable_account() {
-  rm -f "$(_codex_disabled_file "$1")"
+  _codex_with_lock state rm -f "$(_codex_disabled_file "$1")"
 }
 
 _codex_toggle_account_disabled() {
@@ -1421,9 +1834,79 @@ _codex_set_cooldown() {
   seconds="$(_codex_parse_duration_to_seconds "$duration")" || return 1
   mkdir -p "$(_codex_cooldown_dir)"
   until=$(( $(date +%s) + seconds ))
-  print -r -- "$until" > "$(_codex_cooldown_file "$acct")"
+  _codex_with_lock state _codex_write_file_atomic "$(_codex_cooldown_file "$acct")" "$until" || return 1
   _codex_debug "cooldown_set account=$acct until=$until duration=$duration"
   printf '%s\n' "$until"
+}
+
+_codex_capture_contains_deactivated_workspace() {
+  local capture_file="$1"
+
+  [[ -f "$capture_file" ]] || return 1
+
+  if command -v rg >/dev/null 2>&1; then
+    rg -q --fixed-strings 'deactivated_workspace' "$capture_file"
+  else
+    grep -q -- 'deactivated_workspace' "$capture_file"
+  fi
+}
+
+_codex_maybe_auto_disable_account_from_capture() {
+  local acct="$1"
+  local capture_file="$2"
+
+  _codex_capture_contains_deactivated_workspace "$capture_file" || return 1
+
+  _codex_disable_account "$acct" "auto:deactivated_workspace"
+  _codex_debug "account_auto_disabled account=$acct reason=deactivated_workspace"
+  printf '\nAccount auto-disabled: %s\n' "$(_codex_account_display_name "$acct")" >&2
+  printf 'Reason: received 402 deactivated_workspace from the Codex backend.\n' >&2
+  printf 'Re-enable it after fixing workspace billing/access via cx list.\n' >&2
+  return 0
+}
+
+_codex_run_codex_for_account() {
+  local acct="$1"
+  shift || true
+
+  local capture_file="" stdout_file="" stderr_file="" rc=0 command_string=""
+  local -a command=()
+
+  capture_file="$(mktemp "${TMPDIR:-/tmp}/codex-orbit-launch.XXXXXX")" || return 1
+
+  if command -v script >/dev/null 2>&1 && [[ -t 0 && -t 1 ]]; then
+    if script --version >/dev/null 2>&1; then
+      command=(env "CODEX_HOME=$(_codex_account_dir "$acct")" codex "$@")
+      command_string="${(j: :)${(q)command[@]}}"
+      if script -q -e -c "$command_string" "$capture_file"; then
+        rc=0
+      else
+        rc=$?
+      fi
+    else
+      if script -q "$capture_file" env "CODEX_HOME=$(_codex_account_dir "$acct")" codex "$@"; then
+        rc=0
+      else
+        rc=$?
+      fi
+    fi
+  else
+    stdout_file="${capture_file}.stdout"
+    stderr_file="${capture_file}.stderr"
+    if CODEX_HOME="$(_codex_account_dir "$acct")" codex "$@" >"$stdout_file" 2>"$stderr_file"; then
+      rc=0
+    else
+      rc=$?
+    fi
+    cat "$stdout_file" "$stderr_file" > "$capture_file"
+    [[ -s "$stdout_file" ]] && cat "$stdout_file"
+    [[ -s "$stderr_file" ]] && cat "$stderr_file" >&2
+    rm -f "$stdout_file" "$stderr_file"
+  fi
+
+  _codex_maybe_auto_disable_account_from_capture "$acct" "$capture_file" || true
+  rm -f "$capture_file"
+  return "$rc"
 }
 
 _codex_account_in_cooldown() {
@@ -1487,6 +1970,16 @@ _codex_routing_strategy() {
 
 _codex_select_account_from_list() {
   local persist="${1:-0}"
+
+  if (( persist )); then
+    _codex_with_lock state _codex_select_account_from_list_impl "$@"
+  else
+    _codex_select_account_from_list_impl "$@"
+  fi
+}
+
+_codex_select_account_from_list_impl() {
+  local persist="${1:-0}"
   local state_dir="$(_codex_state_dir)"
   local rr_file="$state_dir/round_robin_last_account"
   local last_account="" account=""
@@ -1501,7 +1994,7 @@ _codex_select_account_from_list() {
   if (( ${#accounts[@]} == 1 )); then
     account="${accounts[1]}"
     if (( persist )); then
-      print -r -- "$account" > "$rr_file"
+      _codex_write_file_atomic "$rr_file" "$account" || return 1
     fi
     printf '%s\n' "$account"
     return 0
@@ -1529,7 +2022,7 @@ _codex_select_account_from_list() {
   fi
 
   if (( persist )); then
-    print -r -- "$account" > "$rr_file"
+    _codex_write_file_atomic "$rr_file" "$account" || return 1
   fi
 
   printf '%s\n' "$account"
@@ -1898,9 +2391,18 @@ _codex_pick_logged_in_account() {
 
 _codex_account_status_value() {
   local acct="$1"
+  local disabled_reason=""
 
   if _codex_account_disabled "$acct"; then
-    printf 'disabled\n'
+    disabled_reason="$(_codex_account_disabled_reason "$acct" 2>/dev/null || true)"
+    case "$disabled_reason" in
+      auto:deactivated_workspace)
+        printf 'disabled (deactivated workspace)\n'
+        ;;
+      *)
+        printf 'disabled\n'
+        ;;
+    esac
   elif _codex_is_logged_in "$acct"; then
     if _codex_account_in_cooldown "$acct"; then
       _codex_cooldown_note "$acct" 2>/dev/null || printf 'cooldown\n'
@@ -1945,25 +2447,22 @@ _codex_account_summary_record() {
 
 _codex_launch_selected_account() {
   local acct="$1"
-  local state_file="$(_codex_state_dir)/last_account"
 
   if ! _codex_is_logged_in "$acct"; then
     echo "No logged-in Codex account: $acct"
     return 1
   fi
 
-  print -r -- "$acct" > "$state_file"
-
+  _codex_set_last_account "$acct" || return 1
   _codex_prepare_account_home "$acct" || return 1
-  CODEX_HOME="$(_codex_account_dir "$acct")" codex --yolo
+  _codex_run_codex_for_account "$acct" --yolo
 }
 
 _codex_replace_account_login() {
   local acct="$1"
-  local state_file="$(_codex_state_dir)/last_account"
 
   _codex_prepare_account_home "$acct" || return 1
-  print -r -- "$acct" > "$state_file"
+  _codex_set_last_account "$acct" || return 1
   echo "Replacing login for: $acct"
   CODEX_HOME="$(_codex_account_dir "$acct")" codex login
 }
@@ -2040,11 +2539,11 @@ _codex_clear_account_state() {
   local state_file="$state_dir/last_account"
   local rr_file="$state_dir/round_robin_last_account"
 
-  if [[ -f "$state_file" && "$(cat "$state_file")" == "$acct" ]]; then
+  if [[ -f "$state_file" && "$(< "$state_file")" == "$acct" ]]; then
     rm -f "$state_file"
   fi
 
-  if [[ -f "$rr_file" && "$(cat "$rr_file")" == "$acct" ]]; then
+  if [[ -f "$rr_file" && "$(< "$rr_file")" == "$acct" ]]; then
     rm -f "$rr_file"
   fi
 
@@ -2055,6 +2554,10 @@ _codex_clear_account_state() {
 }
 
 _codex_archive_account() {
+  _codex_with_lock state _codex_archive_account_impl "$1"
+}
+
+_codex_archive_account_impl() {
   local acct="$1"
   local trash_dir="$(_codex_trash_dir)"
   local timestamp target suffix=0
@@ -2076,10 +2579,82 @@ _codex_archive_account() {
 
 _codex_no_launchable_accounts_message() {
   if [[ -n "$(_codex_logged_in_accounts)" ]]; then
-    echo "All logged-in accounts are disabled or in cooldown. Run: cx list, cx enable, or cx cooldown clear <account>"
+    echo "All logged-in accounts are disabled or in cooldown. Run: cx list or cx cooldown clear <account>"
   else
     echo "No logged-in Codex accounts found. Run: cx login"
   fi
+}
+
+_codex_account_routing_note() {
+  local acct="$1"
+  local disabled_reason=""
+
+  if ! _codex_account_exists "$acct"; then
+    printf 'missing\n'
+  elif ! _codex_is_logged_in "$acct"; then
+    printf 'not logged in\n'
+  elif _codex_account_disabled "$acct"; then
+    disabled_reason="$(_codex_account_disabled_reason "$acct" 2>/dev/null || true)"
+    case "$disabled_reason" in
+      auto:deactivated_workspace)
+        printf 'disabled: deactivated workspace\n'
+        ;;
+      *)
+        printf 'disabled\n'
+        ;;
+    esac
+  elif _codex_account_in_cooldown "$acct"; then
+    _codex_cooldown_note "$acct" 2>/dev/null || printf 'cooldown\n'
+  else
+    printf 'ready\n'
+  fi
+}
+
+_codex_print_routing_report() {
+  local selected="$1"
+  local source="$2"
+  local pinned_account=""
+  local acct="" note=""
+
+  printf 'Routing strategy: %s\n' "$(_codex_routing_strategy)"
+  printf 'Selected: %s\n' "$(_codex_account_display_name "$selected")"
+  case "$source" in
+    pinned)
+      echo "Reason: pinned account is eligible."
+      ;;
+    quota-aware)
+      echo "Reason: selected from cached quota-aware routing."
+      ;;
+    round-robin)
+      echo "Reason: next eligible account in round-robin order."
+      ;;
+    *)
+      printf 'Reason: %s\n' "$source"
+      ;;
+  esac
+
+  if pinned_account="$(_codex_get_pinned_account 2>/dev/null)"; then
+    if [[ "$pinned_account" == "$selected" ]]; then
+      printf 'Pinned: %s (active)\n' "$(_codex_account_display_name "$pinned_account")"
+    else
+      printf 'Pinned: %s (%s, skipped)\n' \
+        "$(_codex_account_display_name "$pinned_account")" \
+        "$(_codex_account_routing_note "$pinned_account")"
+    fi
+  else
+    echo "Pinned: none"
+  fi
+
+  echo "Candidates:"
+  while IFS= read -r acct; do
+    [[ -n "$acct" ]] || continue
+    if [[ "$acct" == "$selected" ]]; then
+      printf '  %s -> selected via %s\n' "$(_codex_account_display_name "$acct")" "$source"
+      continue
+    fi
+    note="$(_codex_account_routing_note "$acct")"
+    printf '  %s -> %s\n' "$(_codex_account_display_name "$acct")" "$note"
+  done < <(_codex_logged_in_accounts)
 }
 
 cx() {
@@ -2100,6 +2675,7 @@ cx() {
   local arg acct idx=1 status_line
 
   mkdir -p "$state_dir"
+  _codex_ensure_state_schema || return 1
 
   while [[ $# -gt 0 ]]; do
     arg="$1"
@@ -2148,6 +2724,10 @@ cx() {
         mode="which"
         shift
         ;;
+      explain)
+        mode="which"
+        shift
+        ;;
       warmup)
         mode="warmup"
         shift
@@ -2160,8 +2740,42 @@ cx() {
         mode="alias"
         shift
         ;;
+      enable)
+        mode="enable"
+        shift
+        ;;
+      disable)
+        mode="disable"
+        shift
+        ;;
+      recover)
+        mode="recover"
+        shift
+        ;;
       update)
         mode="update"
+        shift
+        ;;
+      version)
+        mode="version"
+        shift
+        ;;
+      init)
+        mode="init"
+        shift
+        ;;
+      completions)
+        mode="completions"
+        shift
+        ;;
+      daemon)
+        mode="daemon"
+        shift
+        codex_args+=("$@")
+        break
+        ;;
+      support)
+        mode="support"
         shift
         ;;
       share)
@@ -2190,16 +2804,30 @@ Usage: cx [codex args...]
        cx current
        cx status
        cx list [--plain|--verbose|--interactive]
-       cx doctor
+       cx doctor [--json]
        cx which
+       cx explain
        cx warmup [account] [--show-quota]
        cx quota [account] [--json] [--refresh] [--source oauth|auto|rpc|status]
        cx alias [account <alias>|clear <account|alias>]
-       cx update
+       cx enable [account]
+       cx disable [account]
+       cx recover [account]
+       cx update [--check]
+       cx version
+       cx init [--import <accounts.tar.gz>] [--import-config <config.tar.gz>] [--login] [--shell <zsh|bash>] [--shell-rc <path>] [--no-shell-changes]
+       cx completions <zsh|bash>
+       cx completions install [zsh|bash] [--shell-rc <path>]
+       cx daemon serve [--host <host>] [--port <port>]
+       cx daemon status [--json]
+       cx daemon url
+       cx support [--output <bundle.tar.gz>]
        cx share export [account ...|--all] [--output <archive.tar.gz>]
        cx share import <archive.tar.gz>
+       cx share push <ssh-host> [account ...|--all] [--with-config] [--remote-dir <dir>]
        cx share config export [--output <archive.tar.gz>]
        cx share config import <archive.tar.gz>
+       cx share config push <ssh-host> [--remote-dir <dir>]
        cx resolve
        cx cooldown
        cx cooldown <account> <duration>
@@ -2218,12 +2846,22 @@ Commands:
   cx list              Browse accounts interactively in a TTY, or print saved accounts in scripts.
   cx doctor            Validate dependencies, state paths, and account health.
   cx which             Explain which account would launch next.
+  cx explain           Alias for cx which.
   cx warmup            Send a minimal prompt to start the selected account's current 5h window.
   cx quota             Fetch live Codex quota. Defaults to the fast OAuth path unless overridden.
   cx alias             Set, clear, or list account aliases.
-  cx update            Update codex-orbit based on the current install method.
+  cx enable            Re-enable a saved account.
+  cx disable           Disable a saved account until you recover it.
+  cx recover           Clear disabled and cooldown state for an account.
+  cx update            Check for or apply updates based on the current install method.
+  cx version           Show installed version and install metadata.
+  cx init              Run first-time setup, optional imports, and optional shell completion setup.
+  cx completions       Print or install shell completions for zsh or bash.
+  cx daemon            Run or inspect the local daemon used by the macOS menu bar app.
+  cx support           Export a redacted diagnostics bundle for debugging and support.
   cx share export      Export one or more logged-in accounts into a portable archive.
   cx share import      Import accounts from a portable archive created by cx share export.
+  cx share push        Copy accounts to another machine over ssh and import them there.
   cx share config      Export or import the global Codex CLI config (~/.codex/config.toml).
   cx resolve           Print only the account that would launch next.
   cx cooldown          List active cooldowns.
@@ -2247,12 +2885,24 @@ Examples:
   cx quota --source auto
   cx alias acct_001 work
   cx alias clear work
+  cx enable acct_001
+  cx recover acct_001
+  cx update --check
   cx update
+  cx version
+  cx init --shell zsh
+  cx daemon status
+  cx daemon serve --port 8787
+  cx support
   cx share export
+  cx share push user@laptop --with-config
   cx share export acct_001 --output ~/Desktop/codex-orbit-share.tar.gz
   cx share import ~/Desktop/codex-orbit-share.tar.gz
   cx share config export
+  cx share config push user@laptop
   cx share config import ~/Desktop/codex-orbit-config-share.tar.gz
+  cx completions zsh
+  cx completions install zsh
   cx resolve
   cx cooldown acct_001 5h
   cx cooldown clear acct_001
@@ -2273,9 +2923,9 @@ EOF
   done
 
   if [[ "$mode" == "login" ]]; then
-    account="$(_codex_next_account_name)"
+    account="$(_codex_reserve_next_account)"
     _codex_prepare_account_home "$account" || return 1
-    print -r -- "$account" > "$state_file"
+    _codex_set_last_account "$account" || return 1
     echo "Using internal account: $account"
     CODEX_HOME="$(_codex_account_dir "$account")" codex login "${codex_args[@]}"
     return $?
@@ -2288,9 +2938,9 @@ EOF
 
     while true; do
       (( stop_login_loop )) && return 130
-      account="$(_codex_next_account_name)"
+      account="$(_codex_reserve_next_account)"
       _codex_prepare_account_home "$account" || return 1
-      print -r -- "$account" > "$state_file"
+      _codex_set_last_account "$account" || return 1
       echo "Using internal account: $account"
       if CODEX_HOME="$(_codex_account_dir "$account")" codex login "${codex_args[@]}"; then
         login_status=0
@@ -2309,69 +2959,16 @@ EOF
   fi
 
   if [[ "$mode" == "doctor" ]]; then
-    if command -v codex >/dev/null 2>&1; then
-      printf '[ok] codex: %s\n' "$(command -v codex)"
-    else
-      echo "[fail] codex: missing from PATH"
-      doctor_exit=1
+    if (( ${#codex_args[@]} > 1 )) || { (( ${#codex_args[@]} == 1 )) && [[ "${codex_args[1]}" != "--json" ]]; }; then
+      echo "Usage: cx doctor [--json]"
+      return 1
     fi
-
-    if command -v rg >/dev/null 2>&1; then
-      printf '[ok] rg: %s\n' "$(command -v rg)"
+    if (( ${#codex_args[@]} == 1 )); then
+      _codex_doctor_json
     else
-      echo "[fail] rg: missing from PATH"
-      doctor_exit=1
+      _codex_doctor_text
     fi
-
-    if command -v fzf >/dev/null 2>&1; then
-      printf '[ok] fzf: %s\n' "$(command -v fzf)"
-    else
-      echo "[warn] fzf: optional, picker falls back to numbered prompts"
-    fi
-
-    if _codex_python3 >/dev/null 2>&1; then
-      printf '[ok] python3: %s\n' "$(_codex_python3)"
-    else
-      echo "[warn] python3: required for shared-session migration, plus email/workspace metadata and live quota in cx list/cx which/cx quota"
-    fi
-
-    mkdir -p "$(_codex_accounts_dir)" "$state_dir" "$(_codex_trash_dir)" "$(_codex_cooldown_dir)"
-    if [[ -w "$(_codex_accounts_dir)" && -w "$state_dir" ]]; then
-      printf '[ok] state: %s\n' "$(_codex_accounts_dir)"
-    else
-      echo "[fail] state: ~/.codex-accounts is not writable"
-      doctor_exit=1
-    fi
-
-    while IFS= read -r acct; do
-      [[ -n "$acct" ]] || continue
-      accounts_count=$((accounts_count + 1))
-    done < <(_codex_accounts_list)
-
-    while IFS= read -r acct; do
-      [[ -n "$acct" ]] || continue
-      logged_in_count=$((logged_in_count + 1))
-    done < <(_codex_logged_in_accounts)
-
-    while IFS=$'\t' read -r acct until; do
-      [[ -n "$acct" ]] || continue
-      cooldown_count=$((cooldown_count + 1))
-    done < <(_codex_active_cooldowns)
-
-    printf '[info] accounts: %d total, %d logged in\n' \
-      "$accounts_count" \
-      "$logged_in_count"
-    printf '[info] cooldowns: %d active\n' "$cooldown_count"
-    printf '[info] routing: %s\n' "$(_codex_routing_strategy)"
-    printf '[info] archived: %d\n' "$(find "$(_codex_trash_dir)" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')"
-
-    if [[ -f "$HOME/.codex/config.toml" ]]; then
-      echo "[ok] base config: ~/.codex/config.toml found"
-    else
-      echo "[warn] base config: ~/.codex/config.toml not found, new accounts start with an empty config"
-    fi
-
-    return "$doctor_exit"
+    return $?
   fi
 
   if [[ "$mode" == "status" ]]; then
@@ -2449,7 +3046,7 @@ EOF
     fi
 
     _codex_set_pinned_account "$account"
-    print -r -- "$account" > "$state_file"
+    _codex_set_last_account "$account" || return 1
     _codex_debug "pin_set account=$account"
     echo "Pinned for this shell: $(_codex_account_display_name "$account")"
     return 0
@@ -2461,7 +3058,7 @@ EOF
       return 1
     fi
     _codex_set_pinned_account "$account"
-    print -r -- "$account" > "$state_file"
+    _codex_set_last_account "$account" || return 1
     _codex_debug "pin_next account=$account"
     echo "Pinned for this shell: $(_codex_account_display_name "$account")"
     return 0
@@ -2521,6 +3118,11 @@ EOF
       return $?
     fi
 
+    if [[ "$list_mode" == "rich" ]]; then
+      printf '%-24s  %-24s  %-12s  %-18s  %s\n' "ACCOUNT" "EMAIL" "PLAN" "WORKSPACE" "STATUS"
+      printf '%-24s  %-24s  %-12s  %-18s  %s\n' "-------" "-----" "----" "---------" "------"
+    fi
+
     while IFS= read -r acct; do
       [[ -n "$acct" ]] || continue
 
@@ -2564,9 +3166,8 @@ EOF
         fi
         printf '\n'
       else
-        printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+        printf '%-24s  %-24s  %-12s  %-18s  %s\n' \
           "$(_codex_account_display_name "$acct")" \
-          "$(_codex_account_alias "$acct" 2>/dev/null || printf '-')" \
           "${email_display:--}" \
           "${plan:--}" \
           "$(_codex_workspace_summary "$default_workspace" "${workspace_count:-0}")" \
@@ -2579,9 +3180,11 @@ EOF
   if [[ "$mode" == "cooldown" ]]; then
     if (( ${#codex_args[@]} == 0 )); then
       local line found=0 until
+      printf '%-24s  %s\n' "ACCOUNT" "UNTIL"
+      printf '%-24s  %s\n' "-------" "-----"
       while IFS=$'\t' read -r acct until; do
         [[ -n "$acct" ]] || continue
-        printf '%s\t%s\n' "$(_codex_account_display_name "$acct")" "$(_codex_format_timestamp "$until")"
+        printf '%-24s  %s\n' "$(_codex_account_display_name "$acct")" "$(_codex_format_timestamp "$until")"
         found=1
       done < <(_codex_active_cooldowns)
       if (( ! found )); then
@@ -2635,7 +3238,12 @@ EOF
     local alias_ref="" alias_name="" alias_account="" alias_display_name=""
 
     if (( ${#codex_args[@]} == 0 )); then
-      if ! _codex_list_account_aliases; then
+      printf '%-20s  %s\n' "ALIAS" "ACCOUNT"
+      printf '%-20s  %s\n' "-----" "-------"
+      if ! _codex_list_account_aliases | while IFS=$'\t' read -r alias_name alias_account; do
+        [[ -n "$alias_name" && -n "$alias_account" ]] || continue
+        printf '%-20s  %s\n' "$alias_name" "$alias_account"
+      done; then
         echo "No account aliases set."
       fi
       return 0
@@ -2674,13 +3282,153 @@ EOF
     return 0
   fi
 
-  if [[ "$mode" == "update" ]]; then
-    if (( ${#codex_args[@]} > 0 )); then
-      echo "Usage: cx update"
+  if [[ "$mode" == "enable" || "$mode" == "disable" || "$mode" == "recover" ]]; then
+    local action_account_ref="${codex_args[1]:-}"
+    local action_account=""
+
+    if [[ -z "$(_codex_accounts_list)" ]]; then
+      echo "No Codex accounts found."
       return 1
+    fi
+
+    if [[ -n "$action_account_ref" ]]; then
+      action_account="$(_codex_resolve_account_ref "$action_account_ref" 2>/dev/null || true)"
+      if [[ -z "$action_account" ]]; then
+        echo "Unknown account: $action_account_ref"
+        return 1
+      fi
+    elif ! action_account="$(_codex_pick_account "${mode^} account> ")"; then
+      return 1
+    fi
+
+    case "$mode" in
+      enable)
+        _codex_enable_account "$action_account"
+        echo "Enabled: $(_codex_account_display_name "$action_account")"
+        ;;
+      disable)
+        _codex_disable_account "$action_account" "manual"
+        echo "Disabled: $(_codex_account_display_name "$action_account")"
+        ;;
+      recover)
+        _codex_enable_account "$action_account"
+        _codex_clear_cooldown "$action_account"
+        echo "Recovered: $(_codex_account_display_name "$action_account")"
+        echo "State cleared: disabled flag and cooldown"
+        ;;
+    esac
+    return 0
+  fi
+
+  if [[ "$mode" == "version" ]]; then
+    if (( ${#codex_args[@]} > 0 )); then
+      echo "Usage: cx version"
+      return 1
+    fi
+    _codex_print_version
+    return $?
+  fi
+
+  if [[ "$mode" == "init" ]]; then
+    _codex_init_command "${codex_args[@]}"
+    return $?
+  fi
+
+  if [[ "$mode" == "completions" ]]; then
+    _codex_handle_completions "${codex_args[@]}"
+    return $?
+  fi
+
+  if [[ "$mode" == "daemon" ]]; then
+    local daemon_subcommand="${codex_args[1]:-}"
+    local -a daemon_args=()
+
+    for (( idx = 2; idx <= ${#codex_args[@]}; idx++ )); do
+      daemon_args+=("${codex_args[idx]}")
+    done
+
+    case "$daemon_subcommand" in
+      serve)
+        _codex_daemon_serve "${daemon_args[@]}"
+        return $?
+        ;;
+      status)
+        if (( ${#codex_args[@]} > 2 )) || { (( ${#codex_args[@]} == 2 )) && [[ "${codex_args[2]}" != "--json" ]]; }; then
+          echo "Usage: cx daemon status [--json]"
+          return 1
+        fi
+        if (( ${#codex_args[@]} == 2 )); then
+          _codex_daemon_snapshot_json
+        else
+          _codex_daemon_status_text
+        fi
+        return $?
+        ;;
+      url)
+        if (( ${#codex_args[@]} > 1 )); then
+          echo "Usage: cx daemon url"
+          return 1
+        fi
+        _codex_daemon_default_url
+        return $?
+        ;;
+      ""|--help|-h)
+        echo "Usage: cx daemon serve [--host <host>] [--port <port>]"
+        echo "       cx daemon status [--json]"
+        echo "       cx daemon url"
+        return 0
+        ;;
+      *)
+        echo "Usage: cx daemon serve [--host <host>] [--port <port>]"
+        echo "       cx daemon status [--json]"
+        echo "       cx daemon url"
+        return 1
+        ;;
+    esac
+  fi
+
+  if [[ "$mode" == "update" ]]; then
+    if (( ${#codex_args[@]} > 1 )) || { (( ${#codex_args[@]} == 1 )) && [[ "${codex_args[1]}" != "--check" ]]; }; then
+      echo "Usage: cx update [--check]"
+      return 1
+    fi
+    if (( ${#codex_args[@]} == 1 )); then
+      _codex_update_check
+      return $?
     fi
     _codex_update_self
     return $?
+  fi
+
+  if [[ "$mode" == "support" ]]; then
+    local output_path=""
+
+    while (( ${#codex_args[@]} > 0 )); do
+      arg="${codex_args[1]}"
+      case "$arg" in
+        --output)
+          if (( ${#codex_args[@]} < 2 )); then
+            echo "Usage: cx support [--output <bundle.tar.gz>]"
+            return 1
+          fi
+          output_path="${codex_args[2]}"
+          codex_args=("${codex_args[@]:3}")
+          ;;
+        --help|-h)
+          echo "Usage: cx support [--output <bundle.tar.gz>]"
+          echo "Default: exports a redacted diagnostics bundle into ./codex-orbit-support-YYYYMMDDHHMMSS.tar.gz"
+          return 0
+          ;;
+        *)
+          echo "Usage: cx support [--output <bundle.tar.gz>]"
+          return 1
+          ;;
+      esac
+    done
+
+    output_path="$(_codex_write_support_bundle "$output_path")" || return 1
+    printf 'Support bundle written to %s\n' "$output_path"
+    return 0
   fi
 
   if [[ "$mode" == "share" ]]; then
@@ -2708,14 +3456,20 @@ EOF
           _codex_share_config_import "${config_share_args[@]}"
           return $?
           ;;
+        push)
+          _codex_share_config_push "${config_share_args[@]}"
+          return $?
+          ;;
         ""|--help|-h)
           echo "Usage: cx share config export [--output <archive.tar.gz>]"
           echo "       cx share config import <archive.tar.gz>"
+          echo "       cx share config push <ssh-host> [--remote-dir <dir>]"
           return 0
           ;;
         *)
           echo "Usage: cx share config export [--output <archive.tar.gz>]"
           echo "       cx share config import <archive.tar.gz>"
+          echo "       cx share config push <ssh-host> [--remote-dir <dir>]"
           return 1
           ;;
       esac
@@ -2730,24 +3484,37 @@ EOF
         _codex_share_import "${share_args[@]}"
         return $?
         ;;
+      push)
+        _codex_share_push "${share_args[@]}"
+        return $?
+        ;;
       ""|--help|-h)
         echo "Usage: cx share export [account ...|--all] [--output <archive.tar.gz>]"
         echo "       cx share import <archive.tar.gz>"
+        echo "       cx share push <ssh-host> [account ...|--all] [--with-config] [--remote-dir <dir>]"
         echo "       cx share config export [--output <archive.tar.gz>]"
         echo "       cx share config import <archive.tar.gz>"
+        echo "       cx share config push <ssh-host> [--remote-dir <dir>]"
         return 0
         ;;
       *)
         echo "Usage: cx share export [account ...|--all] [--output <archive.tar.gz>]"
         echo "       cx share import <archive.tar.gz>"
+        echo "       cx share push <ssh-host> [account ...|--all] [--with-config] [--remote-dir <dir>]"
         echo "       cx share config export [--output <archive.tar.gz>]"
         echo "       cx share config import <archive.tar.gz>"
+        echo "       cx share config push <ssh-host> [--remote-dir <dir>]"
         return 1
         ;;
     esac
   fi
 
   if [[ "$mode" == "resolve" || "$mode" == "which" ]]; then
+    if (( ${#codex_args[@]} > 0 )); then
+      echo "Usage: cx $mode"
+      return 1
+    fi
+
     if ! selection="$(_codex_resolve_account_selection 0)"; then
       _codex_no_launchable_accounts_message
       return 1
@@ -2761,12 +3528,12 @@ EOF
       return 0
     fi
 
-    printf 'Account: %s\n' "$(_codex_account_display_name "$account")"
-    printf 'Source: %s\n' "$source"
+    _codex_print_routing_report "$account" "$source"
     metadata="$(_codex_account_metadata "$account" 2>/dev/null || true)"
     if [[ -n "$metadata" ]]; then
       local sep=$'\x1f'
       IFS="$sep" read -r email plan default_workspace workspace_count workspace_titles account_id last_refresh auth_mode <<<"$metadata"
+      echo "Selected account details:"
       printf 'Email: %s\n' "$(_codex_display_email "$email" "-")"
       if [[ -n "$plan" ]]; then
         printf 'Plan: %s\n' "$plan"
@@ -2801,22 +3568,7 @@ EOF
       printf 'Quota source: %s\n' "${quota_source:-unknown}"
     fi
     if pinned_account="$(_codex_get_pinned_account 2>/dev/null)"; then
-      if [[ "$source" != "pinned" ]]; then
-        cooldown_note="$(_codex_cooldown_note "$pinned_account" 2>/dev/null || true)"
-        if [[ -n "$cooldown_note" ]]; then
-          printf 'Pinned: %s (%s, skipped)\n' "$(_codex_account_display_name "$pinned_account")" "$cooldown_note"
-        elif ! _codex_account_exists "$pinned_account"; then
-          printf 'Pinned: %s (missing, skipped)\n' "$pinned_account"
-        elif ! _codex_is_logged_in "$pinned_account"; then
-          printf 'Pinned: %s (not logged in, skipped)\n' "$(_codex_account_display_name "$pinned_account")"
-        elif _codex_account_disabled "$pinned_account"; then
-          printf 'Pinned: %s (disabled, skipped)\n' "$(_codex_account_display_name "$pinned_account")"
-        fi
-      else
-        printf 'Pinned: %s\n' "$(_codex_account_display_name "$pinned_account")"
-      fi
-    else
-      echo "Pinned: none"
+      :
     fi
     return 0
   fi
@@ -3150,7 +3902,7 @@ EOF
       local reset_width=12
       local meter_width=15
       printf '%-*s  %-*s  %-*s  %-*s  %-*s\n' \
-        "$account_width" 'EMAIL' \
+        "$account_width" 'ACCOUNT' \
         "$meter_width" '5H LEFT' \
         "$reset_width" '5H RESET' \
         "$meter_width" 'WEEKLY' \
@@ -3202,11 +3954,11 @@ EOF
 
   account="${selection%%$'\t'*}"
   source="${selection#*$'\t'}"
-  print -r -- "$account" > "$state_file"
+  _codex_set_last_account "$account" || return 1
   _codex_debug "launch account=$account source=$source arg_count=${#codex_args[@]}"
 
   _codex_prepare_account_home "$account" || return 1
-  CODEX_HOME="$(_codex_account_dir "$account")" codex --yolo "${codex_args[@]}"
+  _codex_run_codex_for_account "$account" --yolo "${codex_args[@]}"
 }
 
 cx_custom() {

@@ -12,6 +12,17 @@
 - Fixed `cx quota` so it prepares the selected account home before probing quota, applying shared-session migration and config normalization consistently with launch and warmup flows.
 - Added an interactive `cx quota` loading spinner with Unicode frames and ASCII fallback.
 - Fixed `cx quota --json` to reuse cached snapshots when available instead of forcing a live refresh path.
+- Added automatic account disabling when launch or warmup returns the backend `deactivated_workspace` error, so routing stops selecting that account until it is re-enabled.
+- Added filesystem locking around account creation and critical state writes so concurrent shells do not race pins, aliases, cooldowns, routing state, deletes, or imports.
+- Added explicit state schema versioning and automatic migration for older unversioned `~/.codex-accounts/.state` layouts.
+- Added `cx doctor --json` for machine-readable diagnostics and `cx support` for redacted support bundles.
+- Added `cx version`, `cx update --check`, and install metadata for clearer direct-install update visibility.
+- Added `cx enable`, `cx disable`, and `cx recover` for explicit account recovery and state cleanup.
+- Added `cx init`, shell completion generation/installation, and completion cleanup on uninstall.
+- Added `cx share push` and `cx share config push` for one-command cross-device transfer over `ssh`.
+- Added `cx daemon` with a local `/health` and `/v1/status` HTTP service, plus a first macOS SwiftUI menu bar app scaffold under `macos/CodexOrbitMenu`.
+- Cleaned up user-facing output for `cx which`, `cx list`, `cx cooldown`, and the quota board.
+- Replaced duplicated workflow smoke blocks with shared state/locking and integration test scripts used by CI and release validation.
 - Removed project-maintained package-manager publishing and kept installation focused on the direct installer and repo checkouts.
 - Fixed account config normalization to deduplicate repeated `cli_auth_credentials_store` entries instead of rewriting only the first match.
 
