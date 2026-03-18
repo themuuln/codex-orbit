@@ -114,6 +114,7 @@ cx
 - `cx init`: run first-time setup, optional imports, and optional shell completion setup
 - `cx completions`: print or install shell completions for `zsh` or `bash`
 - `cx daemon`: run or inspect the local status daemon used by the macOS menu bar app
+  Supports `launchd` lifecycle helpers on macOS
 - `cx support`: export a redacted diagnostics bundle for debugging
 - `cx share export`: export one or more logged-in accounts into a portable archive
 - `cx share import`: import accounts from a portable archive
@@ -179,6 +180,8 @@ cx completions zsh
 cx completions install zsh
 cx daemon status
 cx daemon serve --port 8787
+cx daemon launchd plist
+cx daemon launchd install
 cx support
 cx share export
 cx share push user@laptop --with-config
@@ -237,6 +240,14 @@ cx daemon serve --port 8787
 ```
 
 Then launch the built app binary from the Swift package build products, or open the package in Xcode if you want to iterate on the UI.
+
+On macOS, you can also install the daemon as a LaunchAgent:
+
+```zsh
+cx daemon launchd plist
+cx daemon launchd install
+cx daemon launchd status
+```
 
 Move only the global Codex CLI config:
 

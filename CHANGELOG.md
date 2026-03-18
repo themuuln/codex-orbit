@@ -21,6 +21,7 @@
 - Added `cx init`, shell completion generation/installation, and completion cleanup on uninstall.
 - Added `cx share push` and `cx share config push` for one-command cross-device transfer over `ssh`.
 - Added `cx daemon` with a local `/health` and `/v1/status` HTTP service, plus a first macOS SwiftUI menu bar app scaffold under `macos/CodexOrbitMenu`.
+- Added `cx daemon launchd ...` for macOS LaunchAgent lifecycle management of the local daemon.
 - Cleaned up user-facing output for `cx which`, `cx list`, `cx cooldown`, and the quota board.
 - Replaced duplicated workflow smoke blocks with shared state/locking and integration test scripts used by CI and release validation.
 - Removed project-maintained package-manager publishing and kept installation focused on the direct installer and repo checkouts.

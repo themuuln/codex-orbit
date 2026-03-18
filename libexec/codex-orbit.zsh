@@ -2821,6 +2821,7 @@ Usage: cx [codex args...]
        cx daemon serve [--host <host>] [--port <port>]
        cx daemon status [--json]
        cx daemon url
+       cx daemon launchd <plist|install|uninstall|start|stop|status>
        cx support [--output <bundle.tar.gz>]
        cx share export [account ...|--all] [--output <archive.tar.gz>]
        cx share import <archive.tar.gz>
@@ -2858,6 +2859,7 @@ Commands:
   cx init              Run first-time setup, optional imports, and optional shell completion setup.
   cx completions       Print or install shell completions for zsh or bash.
   cx daemon            Run or inspect the local daemon used by the macOS menu bar app.
+  cx daemon launchd    Manage the macOS LaunchAgent for the local daemon.
   cx support           Export a redacted diagnostics bundle for debugging and support.
   cx share export      Export one or more logged-in accounts into a portable archive.
   cx share import      Import accounts from a portable archive created by cx share export.
@@ -2893,6 +2895,7 @@ Examples:
   cx init --shell zsh
   cx daemon status
   cx daemon serve --port 8787
+  cx daemon launchd plist
   cx support
   cx share export
   cx share push user@laptop --with-config
@@ -3372,16 +3375,22 @@ EOF
         _codex_daemon_default_url
         return $?
         ;;
+      launchd)
+        _codex_daemon_launchd "${daemon_args[@]}"
+        return $?
+        ;;
       ""|--help|-h)
         echo "Usage: cx daemon serve [--host <host>] [--port <port>]"
         echo "       cx daemon status [--json]"
         echo "       cx daemon url"
+        echo "       cx daemon launchd <plist|install|uninstall|start|stop|status>"
         return 0
         ;;
       *)
         echo "Usage: cx daemon serve [--host <host>] [--port <port>]"
         echo "       cx daemon status [--json]"
         echo "       cx daemon url"
+        echo "       cx daemon launchd <plist|install|uninstall|start|stop|status>"
         return 1
         ;;
     esac

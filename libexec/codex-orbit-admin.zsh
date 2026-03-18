@@ -1447,3 +1447,159 @@ _codex_daemon_serve() {
   CODEX_ORBIT_DAEMON_HOST="$host" CODEX_ORBIT_DAEMON_PORT="$port" \
     exec "$py" "$script" --accounts-dir "$(_codex_accounts_dir)" serve --host "$host" --port "$port"
 }
+
+_codex_daemon_launch_agent_label() {
+  printf 'com.codex-orbit.daemon\n'
+}
+
+_codex_daemon_launch_agent_file() {
+  printf '%s/Library/LaunchAgents/%s.plist\n' "$HOME" "$(_codex_daemon_launch_agent_label)"
+}
+
+_codex_daemon_launchctl_domain() {
+  printf 'gui/%s\n' "$(id -u)"
+}
+
+_codex_daemon_cx_path() {
+  local cx_path=""
+  local repo_root=""
+
+  if [[ -n "${CODEX_ORBIT_ENTRYPOINT:-}" && -x "${CODEX_ORBIT_ENTRYPOINT:-}" ]]; then
+    printf '%s\n' "$CODEX_ORBIT_ENTRYPOINT"
+    return 0
+  fi
+
+  cx_path="$(command -v cx 2>/dev/null || true)"
+  if [[ -n "$cx_path" && "$cx_path" == /* ]]; then
+    printf '%s\n' "$cx_path"
+    return 0
+  fi
+
+  if repo_root="$(_codex_repo_checkout_root 2>/dev/null)"; then
+    printf '%s/bin/cx\n' "$repo_root"
+    return 0
+  fi
+
+  printf '%s/bin/cx\n' "$(_codex_install_root)"
+}
+
+_codex_daemon_launchd_plist() {
+  local cx_path="$(_codex_daemon_cx_path)"
+  local label="$(_codex_daemon_launch_agent_label)"
+  local stdout_log="$HOME/Library/Logs/codex-orbit-daemon.out.log"
+  local stderr_log="$HOME/Library/Logs/codex-orbit-daemon.err.log"
+  local host="$(_codex_daemon_default_host)"
+  local port="$(_codex_daemon_default_port)"
+
+  cat <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>${label}</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>${cx_path}</string>
+      <string>daemon</string>
+      <string>serve</string>
+      <string>--host</string>
+      <string>${host}</string>
+      <string>--port</string>
+      <string>${port}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>WorkingDirectory</key>
+    <string>${HOME}</string>
+    <key>StandardOutPath</key>
+    <string>${stdout_log}</string>
+    <key>StandardErrorPath</key>
+    <string>${stderr_log}</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>PATH</key>
+      <string>${PATH}</string>
+      <key>HOME</key>
+      <string>${HOME}</string>
+      <key>CODEX_ORBIT_DAEMON_HOST</key>
+      <string>${host}</string>
+      <key>CODEX_ORBIT_DAEMON_PORT</key>
+      <string>${port}</string>
+    </dict>
+  </dict>
+</plist>
+EOF
+}
+
+_codex_require_macos_launchd() {
+  if [[ "$(uname -s)" != "Darwin" ]]; then
+    echo "cx daemon launchd is only supported on macOS"
+    return 1
+  fi
+  command -v launchctl >/dev/null 2>&1 || {
+    echo "launchctl is required for cx daemon launchd"
+    return 1
+  }
+}
+
+_codex_daemon_launchd() {
+  local subcommand="${1:-}"
+  local plist_path="$(_codex_daemon_launch_agent_file)"
+  local label="$(_codex_daemon_launch_agent_label)"
+  local domain="$(_codex_daemon_launchctl_domain)"
+
+  case "$subcommand" in
+    plist)
+      _codex_daemon_launchd_plist
+      ;;
+    install)
+      _codex_require_macos_launchd || return 1
+      mkdir -p "${plist_path:h}" "$HOME/Library/Logs" || return 1
+      _codex_daemon_launchd_plist > "$plist_path" || return 1
+      launchctl bootout "$domain" "$plist_path" >/dev/null 2>&1 || true
+      launchctl bootstrap "$domain" "$plist_path" || return 1
+      launchctl kickstart -k "$domain/$label" >/dev/null 2>&1 || true
+      printf 'Installed launch agent: %s\n' "$plist_path"
+      ;;
+    uninstall)
+      _codex_require_macos_launchd || return 1
+      launchctl bootout "$domain" "$plist_path" >/dev/null 2>&1 || true
+      rm -f "$plist_path"
+      printf 'Removed launch agent: %s\n' "$plist_path"
+      ;;
+    start)
+      _codex_require_macos_launchd || return 1
+      launchctl kickstart -k "$domain/$label" || return 1
+      printf 'Started launch agent: %s\n' "$label"
+      ;;
+    stop)
+      _codex_require_macos_launchd || return 1
+      launchctl bootout "$domain/$label" >/dev/null 2>&1 || launchctl bootout "$domain" "$plist_path" >/dev/null 2>&1 || true
+      printf 'Stopped launch agent: %s\n' "$label"
+      ;;
+    status)
+      _codex_require_macos_launchd || return 1
+      launchctl print "$domain/$label"
+      ;;
+    ""|--help|-h)
+      echo "Usage: cx daemon launchd plist"
+      echo "       cx daemon launchd install"
+      echo "       cx daemon launchd uninstall"
+      echo "       cx daemon launchd start"
+      echo "       cx daemon launchd stop"
+      echo "       cx daemon launchd status"
+      ;;
+    *)
+      echo "Usage: cx daemon launchd plist"
+      echo "       cx daemon launchd install"
+      echo "       cx daemon launchd uninstall"
+      echo "       cx daemon launchd start"
+      echo "       cx daemon launchd stop"
+      echo "       cx daemon launchd status"
+      return 1
+      ;;
+  esac
+}

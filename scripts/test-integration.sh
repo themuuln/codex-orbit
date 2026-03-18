@@ -21,6 +21,7 @@ HOME="$temp_home" "$temp_home/bin/cx" completions zsh | grep -F '#compdef cx' >/
 HOME="$temp_home" "$temp_home/bin/cx" init --shell zsh >/dev/null
 grep -F '# >>> codex-orbit completions >>>' "$temp_home/.zshrc" >/dev/null
 HOME="$temp_home" "$temp_home/bin/cx" daemon url | grep -F 'http://127.0.0.1:8787' >/dev/null
+HOME="$temp_home" "$temp_home/bin/cx" daemon launchd plist | grep -F '<string>com.codex-orbit.daemon</string>' >/dev/null
 
 mkdir -p "$temp_home/.codex-accounts/acct_001"
 printf '{"tokens":{"access_token":"test"}}\n' > "$temp_home/.codex-accounts/acct_001/auth.json"
