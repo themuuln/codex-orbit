@@ -84,11 +84,20 @@ write_snapshot("acct_001", 20)
 write_snapshot("acct_002", 80)
 PY
 
+printf '# shared agents\n' > "$temp_home/.codex/AGENTS.md"
+printf '# standalone profile agents\n' > "$temp_home/.codex-accounts/acct_002/AGENTS.md"
+
 HOME="$temp_home" "$temp_home/bin/cx" alias acct_002 work
 test "$(HOME="$temp_home" CODEX_ORBIT_ROUTING=quota "$temp_home/bin/cx" resolve)" = "acct_002"
 HOME="$temp_home" CODEX_ORBIT_ROUTING=quota "$temp_home/bin/cx" pin-next >/dev/null
 HOME="$temp_home" "$temp_home/bin/cx" current | grep -F 'Pinned: work (acct_002)'
-HOME="$temp_home" "$temp_home/bin/cx" doctor --json | python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["counts"]["accounts"] >= 2; assert data["checks"]["state_writable"] is True'
+HOME="$temp_home" "$temp_home/bin/cx" doctor | grep -F 'run: cx sync-agents' >/dev/null
+HOME="$temp_home" "$temp_home/bin/cx" doctor --json | python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["counts"]["accounts"] >= 2; assert data["checks"]["state_writable"] is True; assert data["counts"]["agent_drift"] == 2; assert data["checks"]["shared_agents_consistent"] is False; assert sorted(data["shared_agents"]["drift_accounts"]) == ["acct_001", "acct_002"]'
+HOME="$temp_home" "$temp_home/bin/cx" sync-agents acct_001 work >/dev/null
+test -L "$temp_home/.codex-accounts/acct_001/AGENTS.md"
+test -L "$temp_home/.codex-accounts/acct_002/AGENTS.md"
+find "$temp_home/.codex-accounts/acct_002" -maxdepth 1 -name 'AGENTS.md.backup-*' | grep -q .
+HOME="$temp_home" "$temp_home/bin/cx" doctor --json | python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["counts"]["agent_drift"] == 0; assert data["checks"]["shared_agents_consistent"] is True'
 HOME="$temp_home" "$temp_home/bin/cx" daemon status --json | python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["counts"]["accounts"] >= 2; assert data["counts"]["logged_in"] >= 2'
 HOME="$temp_home" "$temp_home/bin/cx" support --output "$temp_home/support.tar.gz" >/dev/null
 tar -tzf "$temp_home/support.tar.gz" | grep -F './doctor.txt' >/dev/null

@@ -31,6 +31,7 @@ _codex_prepare_account_home() {
   local acct="$1"
 
   _codex_ensure_account_config "$acct" || return 1
+  _codex_ensure_account_agents "$acct" || return 1
   _codex_prepare_shared_sessions || return 1
 }
 
@@ -433,6 +434,8 @@ _codex_support_bundle_default_path() {
 _codex_doctor_text() {
   local doctor_exit=0
   local accounts_count logged_in_count cooldown_count archived_count schema_version=""
+  local agents_drift=0
+  local drift_preview=""
 
   if command -v codex >/dev/null 2>&1; then
     printf '[ok] codex: %s\n' "$(command -v codex)"
@@ -487,6 +490,20 @@ _codex_doctor_text() {
     echo "[warn] base config: ~/.codex/config.toml not found, new accounts start with an empty config"
   fi
 
+  _codex_collect_agents_audit
+  agents_drift="${CODEX_ORBIT_AGENTS_AUDIT[drift]:-0}"
+  if [[ "${CODEX_ORBIT_AGENTS_AUDIT[base_present]:-0}" == "1" ]]; then
+    if (( agents_drift == 0 )); then
+      echo "[ok] shared agents: all account homes link to ~/.codex/AGENTS.md"
+    else
+      drift_preview="${(j:, :)CODEX_ORBIT_AGENTS_DRIFT_ACCOUNTS[1,3]}"
+      printf '[warn] shared agents: %s account home(s) are not linked to ~/.codex/AGENTS.md (run: cx sync-agents)\n' "$agents_drift"
+      [[ -n "$drift_preview" ]] && printf '[info] shared agents drift: %s\n' "$drift_preview"
+    fi
+  else
+    echo "[info] shared agents: ~/.codex/AGENTS.md not found, account homes will not auto-link AGENTS.md"
+  fi
+
   return "$doctor_exit"
 }
 
@@ -495,6 +512,8 @@ _codex_doctor_json() {
   local codex_path="" rg_path="" fzf_path="" python_path="" schema_version=""
   local accounts_count logged_in_count cooldown_count disabled_count alias_count archived_count
   local base_config_present=0 state_writable=0
+  local agent_drift=0 agent_linked=0 agent_custom=0 agent_missing=0 agent_drift_links=0 agent_orphan_links=0
+  local agent_drift_accounts=""
 
   py="$(_codex_python3)" || {
     echo "python3 is required for cx doctor --json"
@@ -518,6 +537,15 @@ _codex_doctor_json() {
   fzf_path="$(command -v fzf 2>/dev/null || true)"
   python_path="$(_codex_python3 2>/dev/null || true)"
 
+  _codex_collect_agents_audit
+  agent_drift="${CODEX_ORBIT_AGENTS_AUDIT[drift]:-0}"
+  agent_linked="${CODEX_ORBIT_AGENTS_AUDIT[linked]:-0}"
+  agent_custom="${CODEX_ORBIT_AGENTS_AUDIT[custom]:-0}"
+  agent_missing="${CODEX_ORBIT_AGENTS_AUDIT[missing]:-0}"
+  agent_drift_links="${CODEX_ORBIT_AGENTS_AUDIT[drift_links]:-0}"
+  agent_orphan_links="${CODEX_ORBIT_AGENTS_AUDIT[orphan_links]:-0}"
+  agent_drift_accounts="${(j:,:)CODEX_ORBIT_AGENTS_DRIFT_ACCOUNTS}"
+
   DOCTOR_GENERATED_AT="$(_codex_now_epoch)" \
   DOCTOR_INSTALL_METHOD="$(_codex_current_install_method)" \
   DOCTOR_ROUTING="$(_codex_routing_strategy)" \
@@ -530,6 +558,14 @@ _codex_doctor_json() {
   DOCTOR_ARCHIVED="$archived_count" \
   DOCTOR_BASE_CONFIG="$base_config_present" \
   DOCTOR_STATE_WRITABLE="$state_writable" \
+  DOCTOR_AGENTS_BASE_PRESENT="${CODEX_ORBIT_AGENTS_AUDIT[base_present]:-0}" \
+  DOCTOR_AGENTS_DRIFT="$agent_drift" \
+  DOCTOR_AGENTS_LINKED="$agent_linked" \
+  DOCTOR_AGENTS_CUSTOM="$agent_custom" \
+  DOCTOR_AGENTS_MISSING="$agent_missing" \
+  DOCTOR_AGENTS_DRIFT_LINKS="$agent_drift_links" \
+  DOCTOR_AGENTS_ORPHAN_LINKS="$agent_orphan_links" \
+  DOCTOR_AGENTS_DRIFT_ACCOUNTS="$agent_drift_accounts" \
   DOCTOR_ACCOUNTS_DIR="$(_codex_accounts_dir)" \
   DOCTOR_STATE_DIR="$(_codex_state_dir)" \
   DOCTOR_CODEX_PATH="$codex_path" \
@@ -563,6 +599,12 @@ payload = {
         "disabled": env_int("DOCTOR_DISABLED"),
         "aliases": env_int("DOCTOR_ALIASES"),
         "archived": env_int("DOCTOR_ARCHIVED"),
+        "agent_drift": env_int("DOCTOR_AGENTS_DRIFT"),
+        "agent_linked": env_int("DOCTOR_AGENTS_LINKED"),
+        "agent_custom": env_int("DOCTOR_AGENTS_CUSTOM"),
+        "agent_missing": env_int("DOCTOR_AGENTS_MISSING"),
+        "agent_drift_links": env_int("DOCTOR_AGENTS_DRIFT_LINKS"),
+        "agent_orphan_links": env_int("DOCTOR_AGENTS_ORPHAN_LINKS"),
     },
     "checks": {
         "base_config_present": bool(env_int("DOCTOR_BASE_CONFIG")),
@@ -571,6 +613,11 @@ payload = {
         "ripgrep_in_path": bool(os.environ.get("DOCTOR_RG_PATH")),
         "fzf_in_path": bool(os.environ.get("DOCTOR_FZF_PATH")),
         "python3_in_path": bool(os.environ.get("DOCTOR_PYTHON_PATH")),
+        "shared_agents_present": bool(env_int("DOCTOR_AGENTS_BASE_PRESENT")),
+        "shared_agents_consistent": env_int("DOCTOR_AGENTS_DRIFT") == 0,
+    },
+    "shared_agents": {
+        "drift_accounts": [item for item in os.environ.get("DOCTOR_AGENTS_DRIFT_ACCOUNTS", "").split(",") if item],
     },
 }
 print(json.dumps(payload, indent=2, sort_keys=True))
@@ -901,6 +948,7 @@ _cx_commands=(
   'status:show login status'
   'list:list saved accounts'
   'doctor:run health checks'
+  'sync-agents:relink AGENTS.md to the shared file'
   'which:explain the next account choice'
   'warmup:start the current 5h window'
   'quota:show quota'
@@ -932,6 +980,9 @@ case $state in
         ;;
       doctor)
         _values 'doctor option' --json
+        ;;
+      sync-agents)
+        _describe -t accounts 'account' _cx_accounts
         ;;
       quota)
         _values 'quota option' --json --refresh --source oauth auto rpc status ${_cx_accounts[@]}
@@ -978,7 +1029,7 @@ _cx_complete() {
   COMPREPLY=()
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local commands="login login-loop delete pin pin-next unpin current status list doctor which warmup quota alias enable disable recover update version init support share resolve cooldown completions"
+  local commands="login login-loop delete pin pin-next unpin current status list doctor sync-agents which warmup quota alias enable disable recover update version init support share resolve cooldown completions"
   local accounts
   accounts="$(cx list --plain 2>/dev/null)"
 
@@ -993,6 +1044,9 @@ _cx_complete() {
       ;;
     doctor)
       COMPREPLY=( $(compgen -W "--json" -- "$cur") )
+      ;;
+    sync-agents)
+      COMPREPLY=( $(compgen -W "$accounts" -- "$cur") )
       ;;
     quota)
       COMPREPLY=( $(compgen -W "--json --refresh --source oauth auto rpc status $accounts" -- "$cur") )

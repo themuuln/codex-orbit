@@ -13,6 +13,7 @@ It is built for people who:
 - creates hidden account homes under `~/.codex-accounts/`
 - logs each account in once and reuses the saved auth later
 - keeps session history shared across all saved accounts while auth stays per-account
+- keeps global Codex instructions available in each account home by linking `AGENTS.md` from the base `~/.codex/AGENTS.md` when present
 - routes Codex launches automatically with fast round-robin selection by default
 - supports shell-local pinning so different terminals can stay on different accounts
 - opens Codex directly with the routed account without injecting a startup command
@@ -97,6 +98,7 @@ cx
 - `cx delete`: archive a saved account into trash
 - `cx doctor`: validate dependencies, state paths, and account health
   Supports `--json` for machine-readable diagnostics
+- `cx sync-agents`: relink per-account `AGENTS.md` files back to the shared `~/.codex/AGENTS.md`
 - `cx pin`: pick a logged-in account and pin it to the current shell
 - `cx pin-next`: pin the next routed logged-in account to the current shell
 - `cx unpin`: clear the current shell pin and return to automatic routing
@@ -170,6 +172,8 @@ cx quota --source auto
 cx alias acct_001 work
 cx alias clear work
 cx doctor --json
+cx sync-agents
+cx sync-agents acct_001 work
 cx disable acct_001
 cx recover acct_001
 cx update --check
@@ -367,6 +371,7 @@ Shared across all accounts:
 - `cx quota` defaults to the fast `oauth` source. Use `cx quota --source auto` when you want the old fallback chain, or `--source rpc` / `--source status` for debugging.
 - `cx quota` caches TSV snapshots for 30 seconds by default so repeated checks are fast. Set `CODEX_ORBIT_QUOTA_CACHE_TTL_SECONDS=0` to disable that cache, or set a different TTL in seconds.
 - `cx doctor --json` emits structured health data, and `cx support` packages redacted diagnostics like doctor output, account status, aliases, cooldowns, and routing state into a tarball.
+- `cx doctor` warns when account homes drift away from the shared `~/.codex/AGENTS.md`. Run `cx sync-agents` to relink them, and the command keeps timestamped backups of any standalone per-account `AGENTS.md` it replaces.
 - On first run after upgrading, `codex-orbit` migrates existing per-account sessions into `~/.codex-accounts/.shared/` and replaces the per-account copies with symlinks.
 - One email can belong to multiple workspaces, so `cx list` shows the default workspace plus `(+N)` when more are available. Use `cx list --verbose` to see the full workspace title list.
 - Round robin is the default because it keeps startup fast and the Codex CLI does not expose a documented machine-readable quota command.

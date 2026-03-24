@@ -245,6 +245,196 @@ _codex_ensure_account_config() {
   mv "$temp_file" "$config_file"
 }
 
+_codex_ensure_account_agents() {
+  local acct="$1"
+  local account_dir="$(_codex_account_dir "$acct")"
+  local account_agents="$account_dir/AGENTS.md"
+  local base_agents="$HOME/.codex/AGENTS.md"
+  local target=""
+
+  mkdir -p "$account_dir" || return 1
+
+  if [[ ! -e "$base_agents" ]]; then
+    return 0
+  fi
+
+  if [[ -L "$account_agents" ]]; then
+    target="$(readlink "$account_agents" 2>/dev/null || true)"
+    if [[ -n "$target" && "$(cd "$account_dir" && realpath "$target" 2>/dev/null)" == "$(realpath "$base_agents" 2>/dev/null)" ]]; then
+      return 0
+    fi
+    rm -f "$account_agents" || return 1
+  elif [[ -e "$account_agents" ]]; then
+    return 0
+  fi
+
+  ln -s ../../.codex/AGENTS.md "$account_agents"
+}
+
+_codex_account_agents_status() {
+  local acct="$1"
+  local account_dir="$(_codex_account_dir "$acct")"
+  local account_agents="$account_dir/AGENTS.md"
+  local base_agents="$HOME/.codex/AGENTS.md"
+  local base_real="" target="" target_real=""
+
+  if [[ ! -e "$base_agents" ]]; then
+    if [[ -L "$account_agents" ]]; then
+      echo "orphan-link"
+    elif [[ -e "$account_agents" ]]; then
+      echo "custom"
+    else
+      echo "absent"
+    fi
+    return 0
+  fi
+
+  base_real="$(realpath "$base_agents" 2>/dev/null || true)"
+
+  if [[ -L "$account_agents" ]]; then
+    target="$(readlink "$account_agents" 2>/dev/null || true)"
+    target_real="$(cd "$account_dir" && realpath "$target" 2>/dev/null || true)"
+    if [[ -n "$target_real" && "$target_real" == "$base_real" ]]; then
+      echo "linked"
+    else
+      echo "drift-link"
+    fi
+  elif [[ -e "$account_agents" ]]; then
+    echo "custom"
+  else
+    echo "missing"
+  fi
+}
+
+_codex_collect_agents_audit() {
+  typeset -gA CODEX_ORBIT_AGENTS_AUDIT
+  typeset -ga CODEX_ORBIT_AGENTS_DRIFT_ACCOUNTS
+  local acct="" acct_status=""
+  local base_present=0 linked=0 custom=0 missing=0 drift_links=0 orphan_links=0 absent=0 drift=0
+  local -a drift_accounts=()
+
+  CODEX_ORBIT_AGENTS_AUDIT=()
+  CODEX_ORBIT_AGENTS_DRIFT_ACCOUNTS=()
+
+  [[ -e "$HOME/.codex/AGENTS.md" ]] && base_present=1
+
+  while IFS= read -r acct; do
+    [[ -n "$acct" ]] || continue
+    acct_status="$(_codex_account_agents_status "$acct")"
+    case "$acct_status" in
+      linked)
+        (( linked += 1 ))
+        ;;
+      custom)
+        (( custom += 1 ))
+        (( base_present )) && drift_accounts+=("$acct")
+        ;;
+      missing)
+        (( missing += 1 ))
+        (( base_present )) && drift_accounts+=("$acct")
+        ;;
+      drift-link)
+        (( drift_links += 1 ))
+        (( base_present )) && drift_accounts+=("$acct")
+        ;;
+      orphan-link)
+        (( orphan_links += 1 ))
+        ;;
+      absent)
+        (( absent += 1 ))
+        ;;
+    esac
+  done < <(_codex_accounts_list)
+
+  if (( base_present )); then
+    drift=$(( custom + missing + drift_links ))
+  else
+    drift=$orphan_links
+  fi
+
+  CODEX_ORBIT_AGENTS_AUDIT[base_present]="$base_present"
+  CODEX_ORBIT_AGENTS_AUDIT[linked]="$linked"
+  CODEX_ORBIT_AGENTS_AUDIT[custom]="$custom"
+  CODEX_ORBIT_AGENTS_AUDIT[missing]="$missing"
+  CODEX_ORBIT_AGENTS_AUDIT[drift_links]="$drift_links"
+  CODEX_ORBIT_AGENTS_AUDIT[orphan_links]="$orphan_links"
+  CODEX_ORBIT_AGENTS_AUDIT[absent]="$absent"
+  CODEX_ORBIT_AGENTS_AUDIT[drift]="$drift"
+  CODEX_ORBIT_AGENTS_DRIFT_ACCOUNTS=("${drift_accounts[@]}")
+}
+
+_codex_sync_agents() {
+  local base_agents="$HOME/.codex/AGENTS.md"
+  local ref="" resolved=""
+  local -a selected_accounts=()
+
+  if [[ ! -e "$base_agents" ]]; then
+    echo "Shared AGENTS file not found: ~/.codex/AGENTS.md"
+    return 1
+  fi
+
+  if (( $# > 0 )); then
+    for ref in "$@"; do
+      resolved="$(_codex_resolve_account_ref "$ref" 2>/dev/null || true)"
+      if [[ -z "$resolved" || ! -d "$(_codex_account_dir "$resolved")" ]]; then
+        echo "Unknown account: $ref"
+        return 1
+      fi
+      selected_accounts+=("$resolved")
+    done
+  else
+    selected_accounts=("${(@f)$(_codex_accounts_list)}")
+  fi
+
+  _codex_with_lock state _codex_sync_agents_impl "${selected_accounts[@]}"
+}
+
+_codex_sync_agents_impl() {
+  local stamp="$(date '+%Y%m%d%H%M%S')"
+  local acct="" account_dir="" account_agents="" acct_status="" backup_path=""
+  local changed=0 backed_up=0 skipped=0
+
+  for acct in "$@"; do
+    [[ -n "$acct" ]] || continue
+    account_dir="$(_codex_account_dir "$acct")"
+    account_agents="$account_dir/AGENTS.md"
+    acct_status="$(_codex_account_agents_status "$acct")"
+
+    case "$acct_status" in
+      linked)
+        (( skipped += 1 ))
+        continue
+        ;;
+      custom)
+        backup_path="$account_dir/AGENTS.md.backup-$stamp"
+        mv "$account_agents" "$backup_path" || return 1
+        (( backed_up += 1 ))
+        ;;
+      drift-link)
+        rm -f "$account_agents" || return 1
+        ;;
+      missing)
+        mkdir -p "$account_dir" || return 1
+        ;;
+      *)
+        continue
+        ;;
+    esac
+
+    ln -s ../../.codex/AGENTS.md "$account_agents" || return 1
+    (( changed += 1 ))
+  done
+
+  printf 'Synced AGENTS.md for %d account(s)' "$changed"
+  if (( backed_up > 0 )); then
+    printf '; backed up %d standalone file(s)' "$backed_up"
+  fi
+  if (( skipped > 0 )); then
+    printf '; %d already linked' "$skipped"
+  fi
+  printf '\n'
+}
+
 _codex_logged_in_accounts() {
   local accounts_dir="$(_codex_accounts_dir)"
   local auth_file=""
@@ -555,6 +745,7 @@ _codex_prepare_account_home() {
   local acct="$1"
 
   _codex_ensure_account_config "$acct" || return 1
+  _codex_ensure_account_agents "$acct" || return 1
   _codex_prepare_shared_sessions || return 1
 }
 
@@ -957,6 +1148,8 @@ _codex_support_bundle_default_path() {
 _codex_doctor_text() {
   local doctor_exit=0
   local accounts_count logged_in_count cooldown_count archived_count
+  local agents_drift=0
+  local drift_preview=""
 
   if command -v codex >/dev/null 2>&1; then
     printf '[ok] codex: %s\n' "$(command -v codex)"
@@ -1009,6 +1202,20 @@ _codex_doctor_text() {
     echo "[warn] base config: ~/.codex/config.toml not found, new accounts start with an empty config"
   fi
 
+  _codex_collect_agents_audit
+  agents_drift="${CODEX_ORBIT_AGENTS_AUDIT[drift]:-0}"
+  if [[ "${CODEX_ORBIT_AGENTS_AUDIT[base_present]:-0}" == "1" ]]; then
+    if (( agents_drift == 0 )); then
+      echo "[ok] shared agents: all account homes link to ~/.codex/AGENTS.md"
+    else
+      drift_preview="${(j:, :)CODEX_ORBIT_AGENTS_DRIFT_ACCOUNTS[1,3]}"
+      printf '[warn] shared agents: %s account home(s) are not linked to ~/.codex/AGENTS.md (run: cx sync-agents)\n' "$agents_drift"
+      [[ -n "$drift_preview" ]] && printf '[info] shared agents drift: %s\n' "$drift_preview"
+    fi
+  else
+    echo "[info] shared agents: ~/.codex/AGENTS.md not found, account homes will not auto-link AGENTS.md"
+  fi
+
   return "$doctor_exit"
 }
 
@@ -1017,6 +1224,8 @@ _codex_doctor_json() {
   local codex_path="" rg_path="" fzf_path="" python_path=""
   local accounts_count logged_in_count cooldown_count disabled_count alias_count archived_count
   local base_config_present=0 state_writable=0
+  local agent_drift=0 agent_linked=0 agent_custom=0 agent_missing=0 agent_drift_links=0 agent_orphan_links=0
+  local agent_drift_accounts=""
 
   py="$(_codex_python3)" || {
     echo "python3 is required for cx doctor --json"
@@ -1039,6 +1248,15 @@ _codex_doctor_json() {
   fzf_path="$(command -v fzf 2>/dev/null || true)"
   python_path="$(_codex_python3 2>/dev/null || true)"
 
+  _codex_collect_agents_audit
+  agent_drift="${CODEX_ORBIT_AGENTS_AUDIT[drift]:-0}"
+  agent_linked="${CODEX_ORBIT_AGENTS_AUDIT[linked]:-0}"
+  agent_custom="${CODEX_ORBIT_AGENTS_AUDIT[custom]:-0}"
+  agent_missing="${CODEX_ORBIT_AGENTS_AUDIT[missing]:-0}"
+  agent_drift_links="${CODEX_ORBIT_AGENTS_AUDIT[drift_links]:-0}"
+  agent_orphan_links="${CODEX_ORBIT_AGENTS_AUDIT[orphan_links]:-0}"
+  agent_drift_accounts="${(j:,:)CODEX_ORBIT_AGENTS_DRIFT_ACCOUNTS}"
+
   DOCTOR_GENERATED_AT="$(_codex_now_epoch)" \
   DOCTOR_INSTALL_METHOD="$(_codex_current_install_method)" \
   DOCTOR_ROUTING="$(_codex_routing_strategy)" \
@@ -1050,6 +1268,14 @@ _codex_doctor_json() {
   DOCTOR_ARCHIVED="$archived_count" \
   DOCTOR_BASE_CONFIG="$base_config_present" \
   DOCTOR_STATE_WRITABLE="$state_writable" \
+  DOCTOR_AGENTS_BASE_PRESENT="${CODEX_ORBIT_AGENTS_AUDIT[base_present]:-0}" \
+  DOCTOR_AGENTS_DRIFT="$agent_drift" \
+  DOCTOR_AGENTS_LINKED="$agent_linked" \
+  DOCTOR_AGENTS_CUSTOM="$agent_custom" \
+  DOCTOR_AGENTS_MISSING="$agent_missing" \
+  DOCTOR_AGENTS_DRIFT_LINKS="$agent_drift_links" \
+  DOCTOR_AGENTS_ORPHAN_LINKS="$agent_orphan_links" \
+  DOCTOR_AGENTS_DRIFT_ACCOUNTS="$agent_drift_accounts" \
   DOCTOR_ACCOUNTS_DIR="$(_codex_accounts_dir)" \
   DOCTOR_STATE_DIR="$(_codex_state_dir)" \
   DOCTOR_CODEX_PATH="$codex_path" \
@@ -1082,6 +1308,12 @@ payload = {
         "disabled": env_int("DOCTOR_DISABLED"),
         "aliases": env_int("DOCTOR_ALIASES"),
         "archived": env_int("DOCTOR_ARCHIVED"),
+        "agent_drift": env_int("DOCTOR_AGENTS_DRIFT"),
+        "agent_linked": env_int("DOCTOR_AGENTS_LINKED"),
+        "agent_custom": env_int("DOCTOR_AGENTS_CUSTOM"),
+        "agent_missing": env_int("DOCTOR_AGENTS_MISSING"),
+        "agent_drift_links": env_int("DOCTOR_AGENTS_DRIFT_LINKS"),
+        "agent_orphan_links": env_int("DOCTOR_AGENTS_ORPHAN_LINKS"),
     },
     "checks": {
         "base_config_present": bool(env_int("DOCTOR_BASE_CONFIG")),
@@ -1090,6 +1322,11 @@ payload = {
         "ripgrep_in_path": bool(os.environ.get("DOCTOR_RG_PATH")),
         "fzf_in_path": bool(os.environ.get("DOCTOR_FZF_PATH")),
         "python3_in_path": bool(os.environ.get("DOCTOR_PYTHON_PATH")),
+        "shared_agents_present": bool(env_int("DOCTOR_AGENTS_BASE_PRESENT")),
+        "shared_agents_consistent": env_int("DOCTOR_AGENTS_DRIFT") == 0,
+    },
+    "shared_agents": {
+        "drift_accounts": [item for item in os.environ.get("DOCTOR_AGENTS_DRIFT_ACCOUNTS", "").split(",") if item],
     },
 }
 print(json.dumps(payload, indent=2, sort_keys=True))
@@ -2720,6 +2957,10 @@ cx() {
         mode="doctor"
         shift
         ;;
+      sync-agents)
+        mode="sync-agents"
+        shift
+        ;;
       which)
         mode="which"
         shift
@@ -2805,6 +3046,7 @@ Usage: cx [codex args...]
        cx status
        cx list [--plain|--verbose|--interactive]
        cx doctor [--json]
+       cx sync-agents [account ...]
        cx which
        cx explain
        cx warmup [account] [--show-quota]
@@ -2846,6 +3088,7 @@ Commands:
   cx status            Show login status for all discovered account slots.
   cx list              Browse accounts interactively in a TTY, or print saved accounts in scripts.
   cx doctor            Validate dependencies, state paths, and account health.
+  cx sync-agents       Relink account AGENTS.md files to the shared ~/.codex/AGENTS.md.
   cx which             Explain which account would launch next.
   cx explain           Alias for cx which.
   cx warmup            Send a minimal prompt to start the selected account's current 5h window.
@@ -2877,6 +3120,8 @@ Examples:
   cx list --verbose
   cx list --interactive
   cx pin acct_002
+  cx sync-agents
+  cx sync-agents acct_001 work
   cx which
   cx warmup
   cx warmup acct_001
@@ -2971,6 +3216,11 @@ EOF
     else
       _codex_doctor_text
     fi
+    return $?
+  fi
+
+  if [[ "$mode" == "sync-agents" ]]; then
+    _codex_sync_agents "${codex_args[@]}"
     return $?
   fi
 
