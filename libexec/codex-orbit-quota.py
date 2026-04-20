@@ -15,6 +15,8 @@ import time
 import urllib.error
 import urllib.request
 
+from codex_orbit_auth import load_auth_payload, store_auth_payload
+
 
 REFRESH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 REFRESH_URL = "https://auth.openai.com/oauth/token"
@@ -52,11 +54,6 @@ def account_paths(account_dir):
     }
 
 
-def read_json(path):
-    with open(path, "r", encoding="utf-8") as handle:
-        return json.load(handle)
-
-
 def parse_last_refresh(value):
     if not value or not isinstance(value, str):
         return None
@@ -81,17 +78,7 @@ def needs_refresh(auth_obj):
     return age.total_seconds() > 8 * 24 * 60 * 60
 
 
-def write_auth_file(path, obj):
-    path = pathlib.Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(path.parent), delete=False) as handle:
-        json.dump(obj, handle, indent=2, sort_keys=True)
-        handle.write("\n")
-        temp_name = handle.name
-    os.replace(temp_name, path)
-
-
-def refresh_tokens(auth_path, auth_obj):
+def refresh_tokens(account_dir, auth_obj):
     tokens = auth_obj.get("tokens") or {}
     refresh_token = tokens.get("refresh_token")
     if not refresh_token:
@@ -134,7 +121,7 @@ def refresh_tokens(auth_path, auth_obj):
         tokens["id_token"] = payload["id_token"]
     auth_obj["tokens"] = tokens
     auth_obj["last_refresh"] = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
-    write_auth_file(auth_path, auth_obj)
+    store_auth_payload(account_dir, auth_obj)
     return auth_obj
 
 
@@ -220,18 +207,17 @@ def window_from_usage_payload(window):
 
 
 def fetch_oauth(paths):
-    auth_path = paths["auth_file"]
-    if not auth_path.is_file():
-        raise QuotaError("auth.json not found")
-
-    auth_obj = read_json(auth_path)
+    try:
+        auth_obj = load_auth_payload(paths["account_dir"])
+    except FileNotFoundError as exc:
+        raise QuotaError("auth.json not found") from exc
     tokens = auth_obj.get("tokens") or {}
     access_token = tokens.get("access_token")
     if not access_token:
         raise QuotaError("access token missing")
 
     if needs_refresh(auth_obj):
-        auth_obj = refresh_tokens(auth_path, auth_obj)
+        auth_obj = refresh_tokens(paths["account_dir"], auth_obj)
         tokens = auth_obj.get("tokens") or {}
         access_token = tokens.get("access_token")
 
@@ -254,7 +240,7 @@ def fetch_oauth(paths):
         payload = do_request(access_token)
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403) and tokens.get("refresh_token"):
-            auth_obj = refresh_tokens(auth_path, auth_obj)
+            auth_obj = refresh_tokens(paths["account_dir"], auth_obj)
             tokens = auth_obj.get("tokens") or {}
             payload = do_request(tokens.get("access_token", ""))
         else:

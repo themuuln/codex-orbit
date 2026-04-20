@@ -159,7 +159,11 @@ while [ "$#" -gt 0 ]; do
 done
 
 target_bin="$bin_dir/cx"
+target_clisess_bin="$bin_dir/clisess"
+target_cxs_bin="$bin_dir/cxs"
 target_internal_bin="$install_dir/bin/cx"
+target_internal_clisess_bin="$install_dir/bin/clisess"
+target_internal_cxs_bin="$install_dir/bin/cxs"
 target_libexec="$install_dir/libexec"
 target_metadata="$install_dir/install-metadata"
 
@@ -167,7 +171,17 @@ if [ -L "$target_bin" ] || [ "$force" -eq 1 ]; then
   rm -f "$target_bin"
 fi
 
+if [ -L "$target_clisess_bin" ] || [ "$force" -eq 1 ]; then
+  rm -f "$target_clisess_bin"
+fi
+
+if [ -L "$target_cxs_bin" ] || [ "$force" -eq 1 ]; then
+  rm -f "$target_cxs_bin"
+fi
+
 rm -f "$target_internal_bin"
+rm -f "$target_internal_clisess_bin"
+rm -f "$target_internal_cxs_bin"
 rm -f "$target_libexec/codex-orbit.zsh"
 rm -f "$target_libexec/codex-orbit-state.zsh"
 rm -f "$target_libexec/codex-orbit-admin.zsh"
@@ -175,6 +189,8 @@ rm -f "$target_libexec/codex-orbit-quota.py"
 rm -f "$target_libexec/codex-orbit-shared-home.py"
 rm -f "$target_libexec/codex-orbit-share.py"
 rm -f "$target_libexec/codex-orbit-daemon.py"
+rm -f "$target_libexec/codex-orbit-hot.js"
+rm -f "$target_libexec/clisess.py"
 rm -f "$target_metadata"
 rmdir "$target_libexec" 2>/dev/null || true
 rmdir "$install_dir/bin" 2>/dev/null || true
@@ -184,3 +200,5 @@ remove_shell_rc_completion_block "$shell_rc"
 
 say "Removed codex-orbit from $install_dir"
 say "Removed cx from $target_bin"
+say "Removed clisess from $target_clisess_bin"
+say "Removed cxs from $target_cxs_bin"

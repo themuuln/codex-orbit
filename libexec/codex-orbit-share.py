@@ -11,6 +11,8 @@ import socket
 import tarfile
 import tempfile
 
+from codex_orbit_auth import load_auth_payload
+
 
 FORMAT_VERSION = 1
 ALLOWED_ACCOUNT_FILES = {"auth.json", "config.toml"}
@@ -85,9 +87,11 @@ def export_accounts(accounts_dir, output_path, account_names):
         config_file = account_dir / "config.toml"
         if not account_dir.is_dir():
             raise ShareError(f"unknown account: {account_name}")
-        if not auth_file.is_file():
-            raise ShareError(f"account is not logged in: {account_name}")
-        export_accounts.append((account_name, auth_file, config_file))
+        try:
+            auth_payload = write_json_bytes(load_auth_payload(account_dir))
+        except FileNotFoundError as exc:
+            raise ShareError(f"account is not logged in: {account_name}") from exc
+        export_accounts.append((account_name, auth_payload, config_file))
         manifest_accounts.append(
             {
                 "name": account_name,
@@ -117,8 +121,8 @@ def export_accounts(accounts_dir, output_path, account_names):
     try:
         with tarfile.open(temp_path, "w:gz") as archive:
             add_bytes_to_tar(archive, "manifest.json", write_json_bytes(manifest))
-            for account_name, auth_file, config_file in export_accounts:
-                archive.add(auth_file, arcname=f"accounts/{account_name}/auth.json")
+            for account_name, auth_payload, config_file in export_accounts:
+                add_bytes_to_tar(archive, f"accounts/{account_name}/auth.json", auth_payload)
                 if config_file.is_file():
                     archive.add(config_file, arcname=f"accounts/{account_name}/config.toml")
         os.replace(temp_path, output)

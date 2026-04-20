@@ -19,7 +19,7 @@ Usage: install.sh [--ref <git-ref>] [--bin-dir <dir>] [--install-dir <dir>] [--s
 
 Options:
   --ref <git-ref>         Git branch or tag to install. Default: main
-  --bin-dir <dir>         Where the cx symlink should be placed.
+  --bin-dir <dir>         Where the cx/clisess/cxs symlinks should be placed.
   --install-dir <dir>     Where codex-orbit files should live.
   --shell-rc <path>       Shell rc file to update when adding the bin dir to PATH.
   --no-modify-shell       Do not edit the shell rc file even if bin dir is missing from PATH.
@@ -243,12 +243,20 @@ else
 fi
 
 [ -f "$source_dir/bin/cx" ] || fail "missing bin/cx in source tree"
+[ -f "$source_dir/bin/clisess" ] || fail "missing bin/clisess in source tree"
+[ -f "$source_dir/bin/cxs" ] || fail "missing bin/cxs in source tree"
 [ -f "$source_dir/libexec/codex-orbit.zsh" ] || fail "missing libexec/codex-orbit.zsh in source tree"
 [ -f "$source_dir/libexec/codex-orbit-state.zsh" ] || fail "missing libexec/codex-orbit-state.zsh in source tree"
 [ -f "$source_dir/libexec/codex-orbit-admin.zsh" ] || fail "missing libexec/codex-orbit-admin.zsh in source tree"
 [ -f "$source_dir/libexec/codex-orbit-daemon.py" ] || fail "missing libexec/codex-orbit-daemon.py in source tree"
+[ -f "$source_dir/libexec/codex-orbit-keychain.py" ] || fail "missing libexec/codex-orbit-keychain.py in source tree"
+[ -f "$source_dir/libexec/codex-orbit-hot.js" ] || fail "missing libexec/codex-orbit-hot.js in source tree"
+[ -f "$source_dir/libexec/codex_orbit_auth.py" ] || fail "missing libexec/codex_orbit_auth.py in source tree"
+[ -f "$source_dir/libexec/clisess.py" ] || fail "missing libexec/clisess.py in source tree"
 
 target_bin="$bin_dir/cx"
+target_clisess_bin="$bin_dir/clisess"
+target_cxs_bin="$bin_dir/cxs"
 target_libexec="$install_dir/libexec"
 target_internal_bin="$install_dir/bin"
 target_metadata="$install_dir/install-metadata"
@@ -262,7 +270,23 @@ if [ -e "$target_bin" ] || [ -L "$target_bin" ]; then
   rm -f "$target_bin"
 fi
 
+if [ -e "$target_clisess_bin" ] || [ -L "$target_clisess_bin" ]; then
+  if [ "$force" -ne 1 ]; then
+    fail "$target_clisess_bin already exists; rerun with --force to replace it"
+  fi
+  rm -f "$target_clisess_bin"
+fi
+
+if [ -e "$target_cxs_bin" ] || [ -L "$target_cxs_bin" ]; then
+  if [ "$force" -ne 1 ]; then
+    fail "$target_cxs_bin already exists; rerun with --force to replace it"
+  fi
+  rm -f "$target_cxs_bin"
+fi
+
 install -m 0755 "$source_dir/bin/cx" "$target_internal_bin/cx"
+install -m 0755 "$source_dir/bin/clisess" "$target_internal_bin/clisess"
+install -m 0755 "$source_dir/bin/cxs" "$target_internal_bin/cxs"
 install -m 0644 "$source_dir/libexec/codex-orbit.zsh" "$target_libexec/codex-orbit.zsh"
 install -m 0644 "$source_dir/libexec/codex-orbit-state.zsh" "$target_libexec/codex-orbit-state.zsh"
 install -m 0644 "$source_dir/libexec/codex-orbit-admin.zsh" "$target_libexec/codex-orbit-admin.zsh"
@@ -270,6 +294,10 @@ install -m 0644 "$source_dir/libexec/codex-orbit-quota.py" "$target_libexec/code
 install -m 0644 "$source_dir/libexec/codex-orbit-shared-home.py" "$target_libexec/codex-orbit-shared-home.py"
 install -m 0644 "$source_dir/libexec/codex-orbit-share.py" "$target_libexec/codex-orbit-share.py"
 install -m 0644 "$source_dir/libexec/codex-orbit-daemon.py" "$target_libexec/codex-orbit-daemon.py"
+install -m 0644 "$source_dir/libexec/codex-orbit-keychain.py" "$target_libexec/codex-orbit-keychain.py"
+install -m 0644 "$source_dir/libexec/codex-orbit-hot.js" "$target_libexec/codex-orbit-hot.js"
+install -m 0644 "$source_dir/libexec/codex_orbit_auth.py" "$target_libexec/codex_orbit_auth.py"
+install -m 0644 "$source_dir/libexec/clisess.py" "$target_libexec/clisess.py"
 install_version="$(detect_source_version "$source_dir" "$ref")"
 installed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 {
@@ -278,9 +306,13 @@ installed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   printf 'installed_at=%s\n' "$installed_at"
 } > "$target_metadata"
 ln -s "$target_internal_bin/cx" "$target_bin"
+ln -s "$target_internal_bin/clisess" "$target_clisess_bin"
+ln -s "$target_internal_bin/cxs" "$target_cxs_bin"
 
 say "Installed codex-orbit to $install_dir"
 say "Linked cx to $target_bin"
+say "Linked clisess to $target_clisess_bin"
+say "Linked cxs to $target_cxs_bin"
 
 case ":$PATH:" in
   *":$bin_dir:"*)

@@ -1,0 +1,6 @@
+#!/usr/bin/env zsh
+set -euo pipefail
+SCRIPT_PATH=${0:P}
+SCRIPT_DIR=${SCRIPT_PATH:h}
+LIBEXEC_DIR=${SCRIPT_DIR}/../libexec
+CLISESS_PROG=cxs exec python3 "$LIBEXEC_DIR/clisess.py" "$@"

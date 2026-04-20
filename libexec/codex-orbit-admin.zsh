@@ -1,39 +1,140 @@
-_codex_python3() {
-  command -v python3 2>/dev/null || return 1
-}
-
-_codex_quota_helper() {
-  printf '%s/codex-orbit-quota.py\n' "$CODEX_ORBIT_LIBEXEC_DIR"
-}
-
-_codex_shared_home_helper() {
-  printf '%s/codex-orbit-shared-home.py\n' "$CODEX_ORBIT_LIBEXEC_DIR"
-}
-
-_codex_share_helper() {
-  printf '%s/codex-orbit-share.py\n' "$CODEX_ORBIT_LIBEXEC_DIR"
-}
-
-_codex_prepare_shared_sessions() {
-  local py script
-
-  py="$(_codex_python3)" || {
-    echo "python3 is required for shared-session migration"
-    return 1
+if (( ! $+functions[_codex_prepare_account_home] )); then
+  # Fallback helpers for standalone sourcing. When admin is loaded from the
+  # main shell, runtime ownership stays with libexec/codex-orbit.zsh.
+  _codex_python3() {
+    command -v python3 2>/dev/null || return 1
   }
-  script="$(_codex_shared_home_helper)"
-  [[ -f "$script" ]] || return 1
 
-  "$py" "$script" --accounts-dir "$(_codex_accounts_dir)"
-}
+  _codex_node() {
+    command -v node 2>/dev/null || return 1
+  }
 
-_codex_prepare_account_home() {
-  local acct="$1"
+  _codex_quota_helper() {
+    printf '%s/codex-orbit-quota.py\n' "$CODEX_ORBIT_LIBEXEC_DIR"
+  }
 
-  _codex_ensure_account_config "$acct" || return 1
-  _codex_ensure_account_agents "$acct" || return 1
-  _codex_prepare_shared_sessions || return 1
-}
+  _codex_shared_home_helper() {
+    printf '%s/codex-orbit-shared-home.py\n' "$CODEX_ORBIT_LIBEXEC_DIR"
+  }
+
+  _codex_share_helper() {
+    printf '%s/codex-orbit-share.py\n' "$CODEX_ORBIT_LIBEXEC_DIR"
+  }
+
+  _codex_hot_helper() {
+    printf '%s/codex-orbit-hot.js\n' "$CODEX_ORBIT_LIBEXEC_DIR"
+  }
+
+  _codex_shared_home_dir() {
+    printf '%s/.shared\n' "$(_codex_accounts_dir)"
+  }
+
+  _codex_symlink_target() {
+    local path="$1"
+    local -a stat_out=()
+
+    if zmodload zsh/stat 2>/dev/null; then
+      zstat -A stat_out +link "$path" 2>/dev/null || return 1
+      (( ${#stat_out[@]} > 0 )) || return 1
+      printf '%s\n' "${stat_out[1]}"
+      return 0
+    fi
+
+    command readlink "$path" 2>/dev/null || return 1
+  }
+
+  _codex_account_shared_entry_ready() {
+    local acct="$1"
+    local entry="$2"
+    local path=""
+    local expected=""
+    local target=""
+
+    path="$(_codex_account_dir "$acct")/$entry"
+    expected="../.shared/$entry"
+
+    [[ -L "$path" ]] || return 1
+    target="$(_codex_symlink_target "$path" 2>/dev/null || true)"
+    [[ "$target" == "$expected" ]] || return 1
+
+    case "$entry" in
+      sessions|shell_snapshots|memories)
+        [[ -d "$(_codex_shared_home_dir)/$entry" ]] || return 1
+        ;;
+    esac
+
+    return 0
+  }
+
+  _codex_account_shared_entries_ready() {
+    local acct="$1"
+    local entry=""
+    local -a entries=(
+      sessions
+      shell_snapshots
+      memories
+      history.jsonl
+      state_5.sqlite
+      state_5.sqlite-shm
+      state_5.sqlite-wal
+      logs_1.sqlite
+      logs_1.sqlite-shm
+      logs_1.sqlite-wal
+    )
+
+    for entry in "${entries[@]}"; do
+      _codex_account_shared_entry_ready "$acct" "$entry" || return 1
+    done
+
+    return 0
+  }
+
+  _codex_prepare_shared_sessions() {
+    local acct="${1:-}"
+    local py script
+
+    if [[ -n "$acct" ]]; then
+      if _codex_account_shared_entries_ready "$acct"; then
+        return 0
+      fi
+    fi
+
+    py="$(_codex_python3)" || {
+      echo "python3 is required for shared-session migration"
+      return 1
+    }
+    script="$(_codex_shared_home_helper)"
+    [[ -f "$script" ]] || return 1
+
+    "$py" "$script" --accounts-dir "$(_codex_accounts_dir)"
+  }
+
+  _codex_prepare_account_home() {
+    local acct="$1"
+
+    _codex_ensure_account_config "$acct" || return 1
+    _codex_ensure_account_agents "$acct" || return 1
+    _codex_prepare_shared_sessions "$acct" || return 1
+  }
+fi
+
+if (( ! $+functions[_codex_prepare_account_runtime] )); then
+  # Compatibility shim for mixed installs where admin code is newer than the
+  # main runtime file. Preserve older behavior instead of failing hot launch.
+  _codex_prepare_account_runtime() {
+    local acct="$1"
+    local warmup="${2:-1}"
+    local record_launch="${3:-1}"
+
+    _codex_prepare_account_home "$acct" || return 1
+    if [[ "$warmup" == "1" ]] && (( $+functions[_codex_maybe_auto_warmup_account] )); then
+      _codex_maybe_auto_warmup_account "$acct"
+    fi
+    if [[ "$record_launch" == "1" ]] && (( $+functions[_codex_record_launched_account] )); then
+      _codex_record_launched_account "$acct" || return 1
+    fi
+  }
+fi
 
 _codex_default_share_archive_path() {
   printf '%s/codex-orbit-share-%s.tar.gz\n' "$PWD" "$(date '+%Y%m%d%H%M%S')"
@@ -438,36 +539,36 @@ _codex_doctor_text() {
   local drift_preview=""
 
   if command -v codex >/dev/null 2>&1; then
-    printf '[ok] codex: %s\n' "$(command -v codex)"
+    printf '%s %s\n' "$(_codex_doctor_prefix ok)" "codex: $(command -v codex)"
   else
-    echo "[fail] codex: missing from PATH"
+    printf '%s %s\n' "$(_codex_doctor_prefix fail)" "codex: missing from PATH"
     doctor_exit=1
   fi
 
   if command -v rg >/dev/null 2>&1; then
-    printf '[ok] rg: %s\n' "$(command -v rg)"
+    printf '%s %s\n' "$(_codex_doctor_prefix ok)" "rg: $(command -v rg)"
   else
-    echo "[fail] rg: missing from PATH"
+    printf '%s %s\n' "$(_codex_doctor_prefix fail)" "rg: missing from PATH"
     doctor_exit=1
   fi
 
   if command -v fzf >/dev/null 2>&1; then
-    printf '[ok] fzf: %s\n' "$(command -v fzf)"
+    printf '%s %s\n' "$(_codex_doctor_prefix ok)" "fzf: $(command -v fzf)"
   else
-    echo "[warn] fzf: optional, picker falls back to numbered prompts"
+    printf '%s %s\n' "$(_codex_doctor_prefix warn)" "fzf: optional, picker falls back to numbered prompts"
   fi
 
   if _codex_python3 >/dev/null 2>&1; then
-    printf '[ok] python3: %s\n' "$(_codex_python3)"
+    printf '%s %s\n' "$(_codex_doctor_prefix ok)" "python3: $(_codex_python3)"
   else
-    echo "[warn] python3: required for shared-session migration, plus email/workspace metadata and live quota in cx list/cx which/cx quota"
+    printf '%s %s\n' "$(_codex_doctor_prefix warn)" "python3: required for shared-session migration, plus email/workspace metadata and live quota in cx list/cx which/cx quota"
   fi
 
   mkdir -p "$(_codex_accounts_dir)" "$(_codex_state_dir)" "$(_codex_trash_dir)" "$(_codex_cooldown_dir)"
   if [[ -w "$(_codex_accounts_dir)" && -w "$(_codex_state_dir)" ]]; then
-    printf '[ok] state: %s\n' "$(_codex_accounts_dir)"
+    printf '%s %s\n' "$(_codex_doctor_prefix ok)" "state: $(_codex_accounts_dir)"
   else
-    echo "[fail] state: ~/.codex-accounts is not writable"
+    printf '%s %s\n' "$(_codex_doctor_prefix fail)" "state: ~/.codex-accounts is not writable"
     doctor_exit=1
   fi
 
@@ -477,31 +578,31 @@ _codex_doctor_text() {
   cooldown_count="$(_codex_active_cooldowns_total)"
   archived_count="$(_codex_archived_accounts_total)"
 
-  printf '[info] state schema: %s\n' "$schema_version"
-  printf '[info] accounts: %s total, %s logged in\n' "$accounts_count" "$logged_in_count"
-  printf '[info] cooldowns: %s active\n' "$cooldown_count"
-  printf '[info] routing: %s\n' "$(_codex_routing_strategy)"
-  printf '[info] install: %s\n' "$(_codex_current_install_method)"
-  printf '[info] archived: %s\n' "$archived_count"
+  printf '%s %s\n' "$(_codex_doctor_prefix info)" "state schema: $schema_version"
+  printf '%s %s\n' "$(_codex_doctor_prefix info)" "accounts: $accounts_count total, $logged_in_count logged in"
+  printf '%s %s\n' "$(_codex_doctor_prefix info)" "cooldowns: $cooldown_count active"
+  printf '%s %s\n' "$(_codex_doctor_prefix info)" "routing: $(_codex_routing_strategy)"
+  printf '%s %s\n' "$(_codex_doctor_prefix info)" "install: $(_codex_current_install_method)"
+  printf '%s %s\n' "$(_codex_doctor_prefix info)" "archived: $archived_count"
 
   if [[ -f "$HOME/.codex/config.toml" ]]; then
-    echo "[ok] base config: ~/.codex/config.toml found"
+    printf '%s %s\n' "$(_codex_doctor_prefix ok)" "base config: ~/.codex/config.toml found"
   else
-    echo "[warn] base config: ~/.codex/config.toml not found, new accounts start with an empty config"
+    printf '%s %s\n' "$(_codex_doctor_prefix warn)" "base config: ~/.codex/config.toml not found, new accounts start with an empty config"
   fi
 
   _codex_collect_agents_audit
   agents_drift="${CODEX_ORBIT_AGENTS_AUDIT[drift]:-0}"
   if [[ "${CODEX_ORBIT_AGENTS_AUDIT[base_present]:-0}" == "1" ]]; then
     if (( agents_drift == 0 )); then
-      echo "[ok] shared agents: all account homes link to ~/.codex/AGENTS.md"
+      printf '%s %s\n' "$(_codex_doctor_prefix ok)" "shared agents: all account homes link to ~/.codex/AGENTS.md"
     else
       drift_preview="${(j:, :)CODEX_ORBIT_AGENTS_DRIFT_ACCOUNTS[1,3]}"
-      printf '[warn] shared agents: %s account home(s) are not linked to ~/.codex/AGENTS.md (run: cx sync-agents)\n' "$agents_drift"
-      [[ -n "$drift_preview" ]] && printf '[info] shared agents drift: %s\n' "$drift_preview"
+      printf '%s %s\n' "$(_codex_doctor_prefix warn)" "shared agents: $agents_drift account home(s) are not linked to ~/.codex/AGENTS.md (run: cx sync-agents)"
+      [[ -n "$drift_preview" ]] && printf '%s %s\n' "$(_codex_doctor_prefix info)" "shared agents drift: $drift_preview"
     fi
   else
-    echo "[info] shared agents: ~/.codex/AGENTS.md not found, account homes will not auto-link AGENTS.md"
+    printf '%s %s\n' "$(_codex_doctor_prefix info)" "shared agents: ~/.codex/AGENTS.md not found, account homes will not auto-link AGENTS.md"
   fi
 
   return "$doctor_exit"
@@ -949,6 +1050,7 @@ _cx_commands=(
   'list:list saved accounts'
   'doctor:run health checks'
   'sync-agents:relink AGENTS.md to the shared file'
+  'sync-config:rewrite config.toml from shared config'
   'which:explain the next account choice'
   'warmup:start the current 5h window'
   'quota:show quota'
@@ -961,6 +1063,8 @@ _cx_commands=(
   'init:run first-time setup'
   'support:write a support bundle'
   'share:share accounts and config'
+  'hot:manage a hot-switched app-server session'
+  'keychain:manage keychain-backed auth copies'
   'resolve:print the next account id'
   'cooldown:manage cooldowns'
   'completions:print or install shell completions'
@@ -981,11 +1085,11 @@ case $state in
       doctor)
         _values 'doctor option' --json
         ;;
-      sync-agents)
+      sync-agents|sync-config)
         _describe -t accounts 'account' _cx_accounts
         ;;
       quota)
-        _values 'quota option' --json --refresh --source oauth auto rpc status ${_cx_accounts[@]}
+        _values 'quota option' --json --refresh --source '--source[quota source]:source:(oauth auto rpc status)' '--sort[quota board sort]:sort:(risk reset capacity weekly account)' ${_cx_accounts[@]}
         ;;
       pin|delete|warmup|enable|disable|recover)
         _describe -t accounts 'account' _cx_accounts
@@ -1016,6 +1120,22 @@ case $state in
           _values 'config share command' export import push
         fi
         ;;
+      keychain)
+        if (( CURRENT == 3 )); then
+          _values 'keychain command' status sync restore clear
+        else
+          _values 'keychain option' --account --json --remove-file ${_cx_accounts[@]}
+        fi
+        ;;
+      hot)
+        if (( CURRENT == 3 )); then
+          _values 'hot command' start open attach switch status stop
+        elif [[ "$words[3]" == "switch" && CURRENT == 4 ]]; then
+          _describe -t accounts 'account' _cx_accounts
+        else
+          _values 'hot option' --account --app-port --control-port --json
+        fi
+        ;;
     esac
     ;;
 esac
@@ -1029,7 +1149,7 @@ _cx_complete() {
   COMPREPLY=()
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local commands="login login-loop delete pin pin-next unpin current status list doctor sync-agents which warmup quota alias enable disable recover update version init support share resolve cooldown completions"
+  local commands="login login-loop delete pin pin-next unpin current status list doctor sync-agents sync-config which warmup quota alias enable disable recover update version init support share hot keychain resolve cooldown completions"
   local accounts
   accounts="$(cx list --plain 2>/dev/null)"
 
@@ -1045,11 +1165,11 @@ _cx_complete() {
     doctor)
       COMPREPLY=( $(compgen -W "--json" -- "$cur") )
       ;;
-    sync-agents)
+    sync-agents|sync-config)
       COMPREPLY=( $(compgen -W "$accounts" -- "$cur") )
       ;;
     quota)
-      COMPREPLY=( $(compgen -W "--json --refresh --source oauth auto rpc status $accounts" -- "$cur") )
+      COMPREPLY=( $(compgen -W "--json --refresh --source --sort oauth auto rpc status risk reset capacity weekly account $accounts" -- "$cur") )
       ;;
     pin|delete|warmup|enable|disable|recover)
       COMPREPLY=( $(compgen -W "$accounts" -- "$cur") )
@@ -1074,6 +1194,22 @@ _cx_complete() {
         COMPREPLY=( $(compgen -W "export import push config" -- "$cur") )
       elif [[ "${COMP_WORDS[2]}" == "config" && $COMP_CWORD -eq 3 ]]; then
         COMPREPLY=( $(compgen -W "export import push" -- "$cur") )
+      fi
+      ;;
+    keychain)
+      if [[ $COMP_CWORD -eq 2 ]]; then
+        COMPREPLY=( $(compgen -W "status sync restore clear" -- "$cur") )
+      else
+        COMPREPLY=( $(compgen -W "--account --json --remove-file $accounts" -- "$cur") )
+      fi
+      ;;
+    hot)
+      if [[ $COMP_CWORD -eq 2 ]]; then
+        COMPREPLY=( $(compgen -W "start open attach switch status stop" -- "$cur") )
+      elif [[ "${COMP_WORDS[2]}" == "switch" && $COMP_CWORD -eq 3 ]]; then
+        COMPREPLY=( $(compgen -W "$accounts" -- "$cur") )
+      else
+        COMPREPLY=( $(compgen -W "--account --app-port --control-port --json" -- "$cur") )
       fi
       ;;
   esac
@@ -1398,6 +1534,580 @@ _codex_daemon_helper() {
   printf '%s/codex-orbit-daemon.py\n' "$CODEX_ORBIT_LIBEXEC_DIR"
 }
 
+_codex_daemon_autoswitch_file() {
+  printf '%s/daemon/auto-switch.json\n' "$(_codex_state_dir)"
+}
+
+_codex_daemon_autoswitch_set() {
+  local enabled="$1"
+  local interval="${CODEX_ORBIT_DAEMON_AUTOSWITCH_INTERVAL:-15}"
+  local payload="{\"enabled\":$( [[ "$enabled" == "1" ]] && printf true || printf false ),\"interval_seconds\":$interval,\"updated_at_epoch\":$(_codex_now_epoch)}"
+  _codex_with_lock state _codex_write_file_atomic "$(_codex_daemon_autoswitch_file)" "$payload"
+}
+
+_codex_daemon_autoswitch_status_text() {
+  local py="" snapshot=""
+
+  py="$(_codex_python3)" || {
+    echo "python3 is required for cx daemon autoswitch status"
+    return 1
+  }
+  snapshot="$(_codex_daemon_snapshot_json)" || return 1
+  SNAPSHOT_JSON="$snapshot" "$py" - <<'PY'
+import json
+import os
+
+payload = json.loads(os.environ["SNAPSHOT_JSON"])
+auto_switch = payload.get("auto_switch") or {}
+event = auto_switch.get("event") or {}
+print(f"Enabled: {'yes' if auto_switch.get('enabled') else 'no'}")
+print(f"Interval: {auto_switch.get('interval_seconds', '-')}")
+if event.get("from_account") and event.get("to_account"):
+    print(f"Last switch: {event['from_account']} -> {event['to_account']} ({event.get('reason', 'unknown')})")
+PY
+}
+
+_codex_handle_keychain() {
+  local py="" script="" subcommand="${1:-}" arg=""
+  shift || true
+
+  py="$(_codex_python3)" || {
+    echo "python3 is required for cx keychain"
+    return 1
+  }
+  script="$(_codex_keychain_helper)"
+  [[ -f "$script" ]] || {
+    echo "keychain helper not found"
+    return 1
+  }
+
+  case "$subcommand" in
+    status)
+      "$py" "$script" --accounts-dir "$(_codex_accounts_dir)" status "$@"
+      ;;
+    sync)
+      "$py" "$script" --accounts-dir "$(_codex_accounts_dir)" sync "$@"
+      ;;
+    restore)
+      "$py" "$script" --accounts-dir "$(_codex_accounts_dir)" restore "$@"
+      ;;
+    clear)
+      "$py" "$script" --accounts-dir "$(_codex_accounts_dir)" clear "$@"
+      ;;
+    ""|--help|-h)
+      echo "Usage: cx keychain status [--account <account>] [--json]"
+      echo "       cx keychain sync [--account <account>] [--remove-file]"
+      echo "       cx keychain restore [--account <account>]"
+      echo "       cx keychain clear [--account <account>]"
+      ;;
+    *)
+      echo "Usage: cx keychain status [--account <account>] [--json]"
+      echo "       cx keychain sync [--account <account>] [--remove-file]"
+      echo "       cx keychain restore [--account <account>]"
+      echo "       cx keychain clear [--account <account>]"
+      return 1
+      ;;
+  esac
+}
+
+_codex_hot_state_dir() {
+  printf '%s/.state/hot\n' "$(_codex_accounts_dir)"
+}
+
+_codex_hot_state_file() {
+  printf '%s/session.json\n' "$(_codex_hot_state_dir)"
+}
+
+_codex_hot_log_file() {
+  printf '%s/controller.log\n' "$(_codex_hot_state_dir)"
+}
+
+_codex_hot_app_log_file() {
+  printf '%s/app-server.log\n' "$(_codex_hot_state_dir)"
+}
+
+_codex_hot_default_app_port() {
+  printf '%s\n' "${CODEX_ORBIT_HOT_APP_PORT:-8791}"
+}
+
+_codex_hot_default_control_port() {
+  printf '%s\n' "${CODEX_ORBIT_HOT_CONTROL_PORT:-8792}"
+}
+
+_codex_hot_default_idle_seconds() {
+  printf '%s\n' "${CODEX_ORBIT_HOT_IDLE_SECONDS:-900}"
+}
+
+_codex_hot_app_url() {
+  local port="${1:-$(_codex_hot_default_app_port)}"
+  printf 'ws://127.0.0.1:%s\n' "$port"
+}
+
+_codex_hot_helper_run() {
+  local node="" script=""
+
+  node="$(_codex_node)" || {
+    echo "node is required for cx hot"
+    return 1
+  }
+  script="$(_codex_hot_helper)"
+  [[ -f "$script" ]] || {
+    echo "hot helper not found"
+    return 1
+  }
+
+  "$node" "$script" "$@"
+}
+
+_codex_hot_status_json() {
+  _codex_hot_helper_run status --state-file "$(_codex_hot_state_file)" --json 2>/dev/null
+}
+
+_codex_hot_running() {
+  local payload=""
+
+  payload="$(_codex_hot_status_json)"
+  [[ "$payload" == *'"running":true'* ]]
+}
+
+_codex_hot_json_field() {
+  local payload="$1"
+  local field="$2"
+  local py=""
+
+  py="$(_codex_python3)" || return 1
+
+  HOT_PAYLOAD="$payload" HOT_FIELD="$field" "$py" - <<'PY'
+import json
+import os
+import sys
+
+payload = os.environ.get("HOT_PAYLOAD", "")
+field = os.environ.get("HOT_FIELD", "")
+
+try:
+    data = json.loads(payload)
+except Exception:
+    sys.exit(1)
+
+if field not in data or data[field] is None:
+    sys.exit(1)
+
+value = data[field]
+if isinstance(value, (dict, list)):
+    print(json.dumps(value, separators=(",", ":")))
+else:
+    print(value)
+PY
+}
+
+_codex_hot_request_action_label() {
+  case "${1:-}" in
+    started)
+      printf 'fresh start\n'
+      ;;
+    switched)
+      printf 'switched\n'
+      ;;
+    reused)
+      printf 'reused\n'
+      ;;
+    *)
+      printf '%s\n' "${1:-unknown}"
+      ;;
+  esac
+}
+
+_codex_hot_account_capable() {
+  local acct="$1"
+  local py=""
+
+  py="$(_codex_python3)" || return 1
+  AUTH_FILE="$(_codex_account_auth_file "$acct")" "$py" - <<'PY'
+import json
+import os
+import pathlib
+import sys
+
+path = pathlib.Path(os.environ["AUTH_FILE"])
+if not path.is_file():
+    raise SystemExit(1)
+
+try:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(1)
+
+tokens = payload.get("tokens") or {}
+access_token = tokens.get("access_token") or tokens.get("accessToken") or payload.get("access_token") or payload.get("accessToken")
+id_token = tokens.get("id_token") or tokens.get("idToken") or payload.get("id_token") or payload.get("idToken")
+account_id = (
+    tokens.get("account_id")
+    or tokens.get("accountId")
+    or payload.get("account_id")
+    or payload.get("accountId")
+    or payload.get("chatgpt_account_id")
+    or payload.get("chatgptAccountId")
+)
+raise SystemExit(0 if access_token and id_token and account_id else 1)
+PY
+}
+
+_codex_hot_resolve_account() {
+  local requested="${1:-}"
+  local selection="" account=""
+  local candidate=""
+
+  if [[ -n "$requested" ]]; then
+    account="$(_codex_resolve_account_ref "$requested" 2>/dev/null || true)"
+    [[ -n "$account" ]] || {
+      echo "No Codex account: $requested"
+      return 1
+    }
+    _codex_is_logged_in "$account" || {
+      echo "No logged-in Codex account: $requested"
+      return 1
+    }
+    _codex_hot_account_capable "$account" || {
+      echo "Account cannot be hot-switched: $requested"
+      return 1
+    }
+    printf '%s\n' "$account"
+    return 0
+  fi
+
+  if ! selection="$(_codex_resolve_account_selection 1)"; then
+    _codex_no_launchable_accounts_message
+    return 1
+  fi
+
+  account="${selection%%$'\t'*}"
+  if _codex_hot_account_capable "$account"; then
+    printf '%s\n' "$account"
+    return 0
+  fi
+
+  while IFS= read -r candidate; do
+    [[ -n "$candidate" ]] || continue
+    _codex_hot_account_capable "$candidate" || continue
+    printf '%s\n' "$candidate"
+    return 0
+  done < <(_codex_eligible_logged_in_accounts 2>/dev/null || true)
+
+  printf '%s\n' "$account"
+}
+
+_codex_hot_start() {
+  local account="${1:-}"
+  local app_port="${2:-$(_codex_hot_default_app_port)}"
+  local control_port="${3:-$(_codex_hot_default_control_port)}"
+  local allow_port_fallback="${4:-1}"
+  local payload=""
+  local -a helper_args=(
+    start
+    --accounts-dir "$(_codex_accounts_dir)"
+    --app-port "$app_port"
+    --control-port "$control_port"
+    --allow-port-fallback "$allow_port_fallback"
+    --idle-seconds "$(_codex_hot_default_idle_seconds)"
+    --state-file "$(_codex_hot_state_file)"
+    --log-file "$(_codex_hot_log_file)"
+    --app-log-file "$(_codex_hot_app_log_file)"
+    --codex-bin "$(_codex_cli_launcher)"
+  )
+
+  if [[ -n "$account" ]]; then
+    _codex_prepare_account_runtime "$account" 1 1 || return 1
+    helper_args+=(--account "$account")
+  fi
+
+  payload="$(_codex_hot_helper_run "${helper_args[@]}")" || return 1
+  [[ -n "$payload" ]] || return 1
+  printf '%s\n' "$payload"
+}
+
+_codex_hot_switch() {
+  local account="$1"
+
+  _codex_prepare_account_runtime "$account" 1 1 || return 1
+  _codex_hot_helper_run switch --state-file "$(_codex_hot_state_file)" --account "$account"
+}
+
+_codex_hot_stop() {
+  _codex_hot_helper_run stop --state-file "$(_codex_hot_state_file)"
+}
+
+_codex_hot_status() {
+  local json="${1:-0}"
+  local payload=""
+  local request_action=""
+  local display_account=""
+
+  if (( json )); then
+    _codex_hot_helper_run status --state-file "$(_codex_hot_state_file)" --json
+  else
+    payload="$(_codex_hot_helper_run status --state-file "$(_codex_hot_state_file)" --json)" || return 1
+    _codex_hot_helper_run status --state-file "$(_codex_hot_state_file)"
+    request_action="$(_codex_hot_json_field "$payload" last_action 2>/dev/null || true)"
+    display_account="$(_codex_hot_json_field "$payload" account 2>/dev/null || true)"
+    if [[ -n "$request_action" ]]; then
+      printf '%s\n' "$(_codex_style muted "Summary: $(_codex_hot_request_action_label "$request_action")")"
+    fi
+    if [[ -n "$display_account" ]]; then
+      printf '%s\n' "$(_codex_style muted "Display account: $(_codex_account_display_name "$display_account")")"
+    fi
+  fi
+}
+
+_codex_hot_attach() {
+  local app_port="${1:-}"
+  shift || true
+  local codex_bin="$(_codex_cli_launcher)"
+  local client_id="cx-${$}-${RANDOM}-${EPOCHSECONDS:-$(date +%s)}"
+  local payload=""
+  local attach_output=""
+  local attach_legacy=0
+
+  if [[ -z "$app_port" ]]; then
+    payload="$(_codex_hot_status_json)"
+    app_port="$(_codex_hot_json_field "$payload" app_port 2>/dev/null || true)"
+  fi
+  [[ -n "$app_port" ]] || app_port="$(_codex_hot_default_app_port)"
+
+  attach_output="$(_codex_hot_helper_run attach-start \
+    --state-file "$(_codex_hot_state_file)" \
+    --client-id "$client_id" \
+    --pid "$$" 2>&1 >/dev/null)" || {
+      if [[ "$attach_output" == *"error: not found"* ]]; then
+        attach_legacy=1
+      else
+        [[ -n "$attach_output" ]] && printf '%s\n' "$attach_output" >&2
+        return 1
+      fi
+    }
+
+  "$codex_bin" --remote "$(_codex_hot_app_url "$app_port")" "$@"
+  local rc=$?
+
+  if (( ! attach_legacy )); then
+    _codex_hot_helper_run attach-stop \
+      --state-file "$(_codex_hot_state_file)" \
+      --client-id "$client_id" >/dev/null 2>&1 || true
+  fi
+
+  return "$rc"
+}
+
+_codex_hot_open_default() {
+  local account="$1"
+  shift || true
+  local app_port="$(_codex_hot_default_app_port)"
+  local control_port="$(_codex_hot_default_control_port)"
+  local payload=""
+  local actual_app_port=""
+
+  if _codex_hot_running; then
+    _codex_hot_attach "" "$@"
+    return $?
+  fi
+
+  payload="$(_codex_hot_start "$account" "$app_port" "$control_port" 1)" || return 1
+  actual_app_port="$(_codex_hot_json_field "$payload" app_port 2>/dev/null || true)"
+  [[ -n "$actual_app_port" ]] || actual_app_port="$app_port"
+  _codex_hot_attach "$actual_app_port" "$@"
+}
+
+_codex_handle_hot() {
+  local subcommand="${1:-}"
+  local account_ref="" account="" payload=""
+  local app_port="$(_codex_hot_default_app_port)"
+  local control_port="$(_codex_hot_default_control_port)"
+  local actual_app_port=""
+  local allow_port_fallback=1
+  local app_port_explicit=0
+  local json=0
+  local request_action=""
+  local arg=""
+  local -a codex_args=()
+
+  shift || true
+
+  case "$subcommand" in
+    start|open)
+      while (( $# > 0 )); do
+        arg="$1"
+        case "$arg" in
+          --account)
+            [[ $# -ge 2 ]] || {
+              echo "Usage: cx hot $subcommand [--account <account>] [--app-port <port>] [--control-port <port>] [-- <codex args...>]"
+              return 1
+            }
+            account_ref="$2"
+            shift 2
+            ;;
+          --app-port)
+            [[ $# -ge 2 ]] || {
+              echo "Usage: cx hot $subcommand [--account <account>] [--app-port <port>] [--control-port <port>] [-- <codex args...>]"
+              return 1
+            }
+            app_port="$2"
+            allow_port_fallback=0
+            app_port_explicit=1
+            shift 2
+            ;;
+          --control-port)
+            [[ $# -ge 2 ]] || {
+              echo "Usage: cx hot $subcommand [--account <account>] [--app-port <port>] [--control-port <port>] [-- <codex args...>]"
+              return 1
+            }
+            control_port="$2"
+            allow_port_fallback=0
+            shift 2
+            ;;
+          --help|-h)
+            echo "Usage: cx hot $subcommand [--account <account>] [--app-port <port>] [--control-port <port>] [-- <codex args...>]"
+            return 0
+            ;;
+          --)
+            shift
+            codex_args=("$@")
+            break
+            ;;
+          *)
+            codex_args+=("$arg")
+            shift
+            ;;
+        esac
+      done
+
+      if [[ -n "$account_ref" ]]; then
+        account="$(_codex_hot_resolve_account "$account_ref")" || return 1
+      elif ! _codex_hot_running; then
+        account="$(_codex_hot_resolve_account "")" || return 1
+      fi
+
+      payload="$(_codex_hot_start "$account" "$app_port" "$control_port" "$allow_port_fallback")" || return 1
+      actual_app_port="$(_codex_hot_json_field "$payload" app_port 2>/dev/null || true)"
+      [[ -n "$actual_app_port" ]] || actual_app_port="$app_port"
+      request_action="$(_codex_hot_json_field "$payload" request_action 2>/dev/null || true)"
+      if [[ -n "$account" ]]; then
+        printf '%s\n' "$(_codex_style success "Hot session ready: $(_codex_account_display_name "$account")")"
+      else
+        printf '%s\n' "$(_codex_style success 'Hot session ready.')"
+      fi
+      if [[ -n "$request_action" ]]; then
+        printf '%s\n' "$(_codex_style muted "Summary: $(_codex_hot_request_action_label "$request_action")")"
+      fi
+      printf '%s\n' "$(_codex_style muted "App URL: $(_codex_hot_app_url "$actual_app_port")")"
+      if [[ "$subcommand" == "open" ]]; then
+        _codex_hot_attach "$actual_app_port" "${codex_args[@]}"
+      fi
+      return 0
+      ;;
+    attach)
+      while (( $# > 0 )); do
+        arg="$1"
+        case "$arg" in
+          --app-port)
+            [[ $# -ge 2 ]] || {
+              echo "Usage: cx hot attach [--app-port <port>] [-- <codex args...>]"
+              return 1
+            }
+            app_port="$2"
+            shift 2
+            ;;
+          --help|-h)
+            echo "Usage: cx hot attach [--app-port <port>] [-- <codex args...>]"
+            return 0
+            ;;
+          --)
+            shift
+            codex_args=("$@")
+            break
+            ;;
+          *)
+            codex_args+=("$arg")
+            shift
+            ;;
+        esac
+      done
+
+      if ! _codex_hot_running; then
+        echo "No hot session is running. Start one with: cx hot start"
+        return 1
+      fi
+      if (( app_port_explicit )); then
+        _codex_hot_attach "$app_port" "${codex_args[@]}"
+      else
+        _codex_hot_attach "" "${codex_args[@]}"
+      fi
+      ;;
+    switch)
+      [[ $# -ge 1 ]] || {
+        echo "Usage: cx hot switch <account>"
+        return 1
+      }
+      account="$(_codex_hot_resolve_account "$1")" || return 1
+      payload="$(_codex_hot_switch "$account")" || return 1
+      printf '%s\n' "$(_codex_style success "Hot-switched to: $(_codex_account_display_name "$account")")"
+      request_action="$(_codex_hot_json_field "$payload" last_action 2>/dev/null || true)"
+      if [[ -n "$request_action" ]]; then
+        printf '%s\n' "$(_codex_style muted "Summary: $(_codex_hot_request_action_label "$request_action")")"
+      fi
+      [[ -n "$payload" ]] && printf '%s\n' "$(_codex_style muted "State: $payload")"
+      return 0
+      ;;
+    status)
+      while (( $# > 0 )); do
+        arg="$1"
+        case "$arg" in
+          --json)
+            json=1
+            shift
+            ;;
+          --help|-h)
+            echo "Usage: cx hot status [--json]"
+            return 0
+            ;;
+          *)
+            echo "Usage: cx hot status [--json]"
+            return 1
+            ;;
+        esac
+      done
+      _codex_hot_status "$json"
+      return $?
+      ;;
+    stop)
+      if (( $# > 0 )); then
+        echo "Usage: cx hot stop"
+        return 1
+      fi
+      _codex_hot_stop || return 1
+      printf '%s\n' "$(_codex_style success 'Hot session stopped.')"
+      return 0
+      ;;
+    ""|--help|-h)
+      echo "Usage: cx hot start [--account <account>] [--app-port <port>] [--control-port <port>]"
+      echo "       cx hot open [--account <account>] [--app-port <port>] [--control-port <port>] [-- <codex args...>]"
+      echo "       cx hot attach [--app-port <port>] [-- <codex args...>]"
+      echo "       cx hot switch <account>"
+      echo "       cx hot status [--json]"
+      echo "       cx hot stop"
+      return 0
+      ;;
+    *)
+      echo "Usage: cx hot start [--account <account>] [--app-port <port>] [--control-port <port>]"
+      echo "       cx hot open [--account <account>] [--app-port <port>] [--control-port <port>] [-- <codex args...>]"
+      echo "       cx hot attach [--app-port <port>] [-- <codex args...>]"
+      echo "       cx hot switch <account>"
+      echo "       cx hot status [--json]"
+      echo "       cx hot stop"
+      return 1
+      ;;
+  esac
+}
+
 _codex_daemon_default_host() {
   printf '%s\n' "${CODEX_ORBIT_DAEMON_HOST:-127.0.0.1}"
 }
@@ -1441,6 +2151,8 @@ import os
 
 payload = json.loads(os.environ["SNAPSHOT_JSON"])
 counts = payload.get("counts", {})
+hot = payload.get("hot") or {}
+auto_switch = payload.get("auto_switch") or {}
 print(f"Daemon URL: http://127.0.0.1:{os.environ.get('CODEX_ORBIT_DAEMON_PORT', '8787')}")
 print(f"Accounts: {counts.get('accounts', 0)} total, {counts.get('logged_in', 0)} logged in")
 print(f"Ready: {counts.get('ready', 0)}")
@@ -1449,6 +2161,9 @@ print(f"Cooldowns: {counts.get('cooldowns', 0)}")
 last_account = payload.get("last_account")
 if last_account:
     print(f"Last account: {last_account}")
+if hot.get("running"):
+    print(f"Hot account: {hot.get('account')}")
+print(f"Auto-switch: {'enabled' if auto_switch.get('enabled') else 'disabled'}")
 PY
 }
 
@@ -1456,6 +2171,7 @@ _codex_daemon_serve() {
   local py="" script=""
   local host="$(_codex_daemon_default_host)"
   local port="$(_codex_daemon_default_port)"
+  local cx_path="$(_codex_daemon_cx_path)"
   local arg=""
 
   py="$(_codex_python3)" || {
@@ -1499,7 +2215,7 @@ _codex_daemon_serve() {
   done
 
   CODEX_ORBIT_DAEMON_HOST="$host" CODEX_ORBIT_DAEMON_PORT="$port" \
-    exec "$py" "$script" --accounts-dir "$(_codex_accounts_dir)" serve --host "$host" --port "$port"
+    exec "$py" "$script" --accounts-dir "$(_codex_accounts_dir)" serve --host "$host" --port "$port" --cx-path "$cx_path"
 }
 
 _codex_daemon_launch_agent_label() {
@@ -1561,6 +2277,8 @@ _codex_daemon_launchd_plist() {
       <string>${host}</string>
       <string>--port</string>
       <string>${port}</string>
+      <string>--cx-path</string>
+      <string>${cx_path}</string>
     </array>
     <key>RunAtLoad</key>
     <true/>

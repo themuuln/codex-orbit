@@ -9,6 +9,104 @@ _codex_debug() {
   printf '[codex-orbit] %s\n' "$*" >&2
 }
 
+_codex_color_mode() {
+  local mode="${CODEX_ORBIT_COLOR:-auto}"
+
+  if [[ -n "${NO_COLOR:-}" ]]; then
+    printf 'never\n'
+    return 0
+  fi
+
+  case "${mode:l}" in
+    always|1|true|yes|on)
+      printf 'always\n'
+      ;;
+    never|0|false|no|off)
+      printf 'never\n'
+      ;;
+    auto|"")
+      printf 'auto\n'
+      ;;
+    *)
+      printf 'auto\n'
+      ;;
+  esac
+}
+
+_codex_color_enabled() {
+  case "$(_codex_color_mode)" in
+    always)
+      return 0
+      ;;
+    never)
+      return 1
+      ;;
+    *)
+      [[ -t 1 && -n "${TERM:-}" && "${TERM}" != "dumb" ]]
+      ;;
+  esac
+}
+
+_codex_color_code() {
+  case "$1" in
+    heading) printf '1;36\n' ;;
+    info) printf '36\n' ;;
+    success) printf '32\n' ;;
+    warning) printf '33\n' ;;
+    error) printf '31\n' ;;
+    muted) printf '90\n' ;;
+    *) return 1 ;;
+  esac
+}
+
+_codex_style() {
+  local role="$1"
+  local text="${2-}"
+  local code=""
+
+  if ! _codex_color_enabled; then
+    printf '%s' "$text"
+    return 0
+  fi
+
+  code="$(_codex_color_code "$role" 2>/dev/null || true)"
+  if [[ -z "$code" ]]; then
+    printf '%s' "$text"
+    return 0
+  fi
+
+  printf '\033[%sm%s\033[0m' "$code" "$text"
+}
+
+_codex_style_account_status() {
+  local status_text="${1:-}"
+
+  case "$status_text" in
+    ready|logged\ in)
+      _codex_style success "$status_text"
+      ;;
+    disabled*)
+      _codex_style error "$status_text"
+      ;;
+    "not logged in")
+      _codex_style muted "$status_text"
+      ;;
+    *)
+      _codex_style warning "$status_text"
+      ;;
+  esac
+}
+
+_codex_doctor_prefix() {
+  case "$1" in
+    ok) _codex_style success '[ok]' ;;
+    warn) _codex_style warning '[warn]' ;;
+    fail) _codex_style error '[fail]' ;;
+    info) _codex_style info '[info]' ;;
+    *) printf '[%s]' "$1" ;;
+  esac
+}
+
 _codex_accounts_dir() {
   printf '%s\n' "$HOME/.codex-accounts"
 }
@@ -62,13 +160,22 @@ _codex_write_file_atomic() {
   mv "$temp_file" "$target"
 }
 
+_codex_remove_lock_dir() {
+  local lock_dir="$1"
+
+  rm -rf "$lock_dir" 2>/dev/null || true
+  [[ ! -e "$lock_dir" ]]
+}
+
 _codex_acquire_lock() {
   local lock_name="$1"
+  local locks_dir="$(_codex_locks_dir)"
   local lock_dir="$(_codex_lock_name_path "$lock_name")"
   local owner_file="$lock_dir/pid"
-  local now=0 start=0 timeout=0 owner_pid=""
+  local now=0 start=0 timeout=0 owner_pid="" invalid_owner=""
+  local missing_owner_count=0 missing_owner_threshold=5
 
-  mkdir -p "$(_codex_locks_dir)" || return 1
+  mkdir -p "$locks_dir" || return 1
   timeout="$(_codex_lock_wait_seconds)"
   start=$SECONDS
 
@@ -82,20 +189,50 @@ _codex_acquire_lock() {
       return 0
     fi
 
-    owner_pid="$(< "$owner_file" 2>/dev/null || true)"
+    if [[ ! -e "$lock_dir" && ! -w "$locks_dir" ]]; then
+      echo "Lock directory is not writable: $locks_dir" >&2
+      return 1
+    fi
+
+    owner_pid="$(cat "$owner_file" 2>/dev/null || true)"
     if [[ -n "$owner_pid" && "$owner_pid" =~ ^[0-9]+$ ]]; then
+      missing_owner_count=0
       if ! kill -0 "$owner_pid" 2>/dev/null; then
-        rm -rf "$lock_dir"
-        continue
+        if _codex_remove_lock_dir "$lock_dir"; then
+          continue
+        fi
+        echo "Failed to clear stale lock: $lock_dir (pid $owner_pid)" >&2
+        return 1
       fi
     elif [[ ! -e "$owner_file" ]]; then
-      sleep 0.05
-      continue
+      (( missing_owner_count += 1 ))
+      if (( missing_owner_count < missing_owner_threshold )); then
+        sleep 0.05
+        continue
+      fi
+      if _codex_remove_lock_dir "$lock_dir"; then
+        missing_owner_count=0
+        continue
+      fi
+      echo "Failed to clear incomplete lock: $lock_dir" >&2
+      return 1
+    else
+      missing_owner_count=0
+      invalid_owner="$(cat "$owner_file" 2>/dev/null || true)"
+      if _codex_remove_lock_dir "$lock_dir"; then
+        continue
+      fi
+      echo "Failed to clear invalid lock: $lock_dir (owner=${invalid_owner:-unknown})" >&2
+      return 1
     fi
 
     now=$SECONDS
     if (( now - start >= timeout )); then
-      echo "Timed out waiting for lock: $lock_name" >&2
+      if [[ -n "$owner_pid" ]]; then
+        echo "Timed out waiting for lock: $lock_name (held by pid $owner_pid at $lock_dir)" >&2
+      else
+        echo "Timed out waiting for lock: $lock_name ($lock_dir)" >&2
+      fi
       return 1
     fi
     sleep 0.05
@@ -103,7 +240,7 @@ _codex_acquire_lock() {
 }
 
 _codex_release_lock() {
-  rm -rf "$(_codex_lock_name_path "$1")"
+  rm -rf "$(_codex_lock_name_path "$1")" 2>/dev/null || true
 }
 
 _codex_with_lock() {
@@ -175,50 +312,108 @@ _codex_reserve_next_account_impl() {
   printf '%s\n' "$account"
 }
 
-_codex_ensure_account_config() {
-  local acct="$1"
-  local account_dir="$(_codex_account_dir "$acct")"
-  local config_file="$account_dir/config.toml"
-  local temp_file=""
+_codex_account_config_marker() {
+  printf '%s\n' '# codex-orbit-managed: shared ~/.codex/config.toml'
+}
 
-  mkdir -p "$account_dir"
+_codex_account_config_is_managed() {
+  local config_file="$1"
+  local first_line="" marker="$(_codex_account_config_marker)"
 
-  if [[ ! -f "$config_file" ]]; then
-    if [[ -f "$HOME/.codex/config.toml" ]]; then
-      cp "$HOME/.codex/config.toml" "$config_file"
-    else
-      : > "$config_file"
-    fi
-  fi
+  [[ -f "$config_file" ]] || return 1
+  IFS= read -r first_line < "$config_file" || true
+  [[ "$first_line" == "$marker" ]]
+}
 
-  temp_file="$(mktemp "${TMPDIR:-/tmp}/codex-orbit-config.XXXXXX")" || return 1
-  if ! awk '
+_codex_render_normalized_config() {
+  local source_file="$1"
+  local managed="${2:-0}"
+  local marker="$(_codex_account_config_marker)"
+
+  awk -v managed="$managed" -v marker="$marker" '
     BEGIN {
       normalized = "cli_auth_credentials_store = \"file\""
       seen = 0
+      emitted = 0
+      if (managed == "1") {
+        print marker
+        emitted += 1
+      }
+    }
+    FNR == 1 && $0 == marker {
+      next
     }
     /^[[:space:]]*cli_auth_credentials_store[[:space:]]*=/ {
       if (!seen) {
         print normalized
         seen = 1
+        emitted += 1
       }
       next
     }
-    { print }
+    {
+      print
+      emitted += 1
+    }
     END {
       if (!seen) {
-        if (NR > 0) {
+        if (emitted > 0) {
           print ""
         }
         print normalized
       }
     }
-  ' "$config_file" > "$temp_file"; then
+  ' "$source_file"
+}
+
+_codex_write_normalized_config() {
+  local source_file="$1"
+  local target_file="$2"
+  local managed="${3:-0}"
+  local temp_file=""
+
+  temp_file="$(mktemp "${TMPDIR:-/tmp}/codex-orbit-config.XXXXXX")" || return 1
+  if ! _codex_render_normalized_config "$source_file" "$managed" > "$temp_file"; then
     rm -f "$temp_file"
     return 1
   fi
 
-  mv "$temp_file" "$config_file"
+  if [[ -f "$target_file" ]] && cmp -s "$temp_file" "$target_file"; then
+    rm -f "$temp_file"
+    return 0
+  fi
+
+  mv "$temp_file" "$target_file"
+}
+
+_codex_ensure_account_config() {
+  local acct="$1"
+  local account_dir="$(_codex_account_dir "$acct")"
+  local config_file="$account_dir/config.toml"
+  local source_file=""
+  local managed=0
+
+  mkdir -p "$account_dir"
+
+  if [[ ! -f "$config_file" ]]; then
+    managed=1
+    if [[ -f "$HOME/.codex/config.toml" ]]; then
+      source_file="$HOME/.codex/config.toml"
+    else
+      source_file="/dev/null"
+    fi
+  elif _codex_account_config_is_managed "$config_file"; then
+    managed=1
+    if [[ -f "$HOME/.codex/config.toml" ]]; then
+      source_file="$HOME/.codex/config.toml"
+    else
+      source_file="$config_file"
+    fi
+  else
+    source_file="$config_file"
+  fi
+
+  _codex_write_normalized_config "$source_file" "$config_file" "$managed"
 }
 
 _codex_logged_in_accounts() {

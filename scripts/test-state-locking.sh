@@ -55,3 +55,16 @@ wait "$pid1"
 wait "$pid2"
 test "$(sort "$rr_home"/rr.* | uniq | wc -l | tr -d ' ')" = "2"
 rm -rf "$rr_home"
+
+missing_pid_home=$(mktemp -d)
+mkdir -p "$missing_pid_home/.codex-accounts/.state/locks/state.lock"
+test "$(HOME="$missing_pid_home" CODEX_ORBIT_LOCK_TIMEOUT_SECONDS=1 zsh -c 'source ./codex-orbit.zsh; _codex_ensure_state_schema >/dev/null; _codex_reserve_next_account')" = "acct_001"
+test ! -d "$missing_pid_home/.codex-accounts/.state/locks/state.lock"
+rm -rf "$missing_pid_home"
+
+invalid_pid_home=$(mktemp -d)
+mkdir -p "$invalid_pid_home/.codex-accounts/.state/locks/state.lock"
+printf 'invalid-pid\n' > "$invalid_pid_home/.codex-accounts/.state/locks/state.lock/pid"
+test "$(HOME="$invalid_pid_home" CODEX_ORBIT_LOCK_TIMEOUT_SECONDS=1 zsh -c 'source ./codex-orbit.zsh; _codex_ensure_state_schema >/dev/null; _codex_reserve_next_account')" = "acct_001"
+test ! -d "$invalid_pid_home/.codex-accounts/.state/locks/state.lock"
+rm -rf "$invalid_pid_home"

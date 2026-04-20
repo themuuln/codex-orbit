@@ -2,3 +2,5 @@
 --ephemeral
 *.pyc
 __pycache__/
+/.factory/settings.json
+/macos/CodexOrbitMenu/.build/
