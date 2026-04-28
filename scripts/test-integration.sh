@@ -16,6 +16,7 @@ trap cleanup EXIT INT TERM
 
 HOME="$temp_home" ./install.sh --bin-dir "$temp_home/bin" --install-dir "$temp_home/share/codex-orbit"
 "$temp_home/bin/cx" --help >/dev/null
+"$temp_home/bin/cxr" --help >/dev/null
 test -f "$temp_home/share/codex-orbit/install-metadata"
 HOME="$temp_home" "$temp_home/bin/cx" version | grep -F 'Install: direct' >/dev/null
 HOME="$temp_home" "$temp_home/bin/cx" completions zsh | grep -F '#compdef cx' >/dev/null
@@ -23,6 +24,135 @@ HOME="$temp_home" "$temp_home/bin/cx" init --shell zsh >/dev/null
 grep -F '# >>> codex-orbit completions >>>' "$temp_home/.zshrc" >/dev/null
 HOME="$temp_home" "$temp_home/bin/cx" daemon url | grep -F 'http://127.0.0.1:8787' >/dev/null
 HOME="$temp_home" "$temp_home/bin/cx" daemon launchd plist | grep -F '<string>com.codex-orbit.daemon</string>' >/dev/null
+
+mkdir -p "$temp_home/mockbin"
+cat > "$temp_home/mockbin/codex" <<'SH'
+#!/bin/sh
+set -eu
+if [ "${1:-}" = "login" ]; then
+  test -n "${CODEX_HOME:-}"
+  mkdir -p "$CODEX_HOME"
+  printf '{"tokens":{"access_token":"YOUR_ACCESS_TOKEN_HERE_LOGIN","account_id":"acct-login"}}\n' > "$CODEX_HOME/auth.json"
+  : > "$CODEX_HOME/config.toml"
+  exit 0
+fi
+printf 'codex-home=%s\n' "${CODEX_HOME:-}" >> "$HOME/clisess-codex.log"
+printf 'codex %s\n' "$*" >> "$HOME/clisess-codex.log"
+exit 0
+SH
+cat > "$temp_home/mockbin/vibeproxy" <<'SH'
+#!/bin/sh
+set -eu
+printf 'vibeproxy-home=%s\n' "${VIBEPROXY_HOME:-}" >> "$HOME/clisess-vibeproxy.log"
+printf 'vibeproxy %s\n' "$*" >> "$HOME/clisess-vibeproxy.log"
+exit 0
+SH
+chmod +x "$temp_home/mockbin/codex" "$temp_home/mockbin/vibeproxy"
+
+PATH="$temp_home/mockbin:$PATH" HOME="$temp_home" "$temp_home/bin/cxs" login codex acct_login_001 >/dev/null
+PATH="$temp_home/mockbin:$PATH" HOME="$temp_home" "$temp_home/bin/cxs" login codex acct_login_002 >/dev/null
+test -f "$temp_home/.clisess/homes/codex/acct_login_001/auth.json"
+test -f "$temp_home/.clisess/homes/codex/acct_login_002/auth.json"
+use_output=$(PATH="$temp_home/mockbin:$PATH" HOME="$temp_home" "$temp_home/bin/cxs" use codex acct_login_002 --to vibeproxy)
+test -f "$temp_home/.clisess/homes/vibeproxy/acct_login_002/auth.json"
+! printf '%s\n' "$use_output" | grep -F 'added:' >/dev/null
+printf '%s\n' "$use_output" | grep -E 'export CODEX_HOME=.*/\.clisess/homes/codex/acct_login_002$' >/dev/null
+PATH="$temp_home/mockbin:$PATH" HOME="$temp_home" "$temp_home/bin/cxs" link codex acct_login_001 vibeproxy acct_login_001 --home-var VIBEPROXY_HOME --exec vibeproxy >/dev/null
+test -f "$temp_home/.clisess/homes/vibeproxy/acct_login_001/auth.json"
+PATH="$temp_home/mockbin:$PATH" HOME="$temp_home" "$temp_home/bin/cxs" status --provider vibeproxy | grep -E 'vibeproxy[[:space:]]+acct_login_001[[:space:]]+mirror[[:space:]]+synced[[:space:]]+file[[:space:]]+codex/acct_login_001' >/dev/null
+PATH="$temp_home/mockbin:$PATH" HOME="$temp_home" "$temp_home/bin/cxs" run vibeproxy acct_login_001 -- vibeproxy status >/dev/null
+python3 - "$temp_home/clisess-vibeproxy.log" "$temp_home/.clisess/homes/vibeproxy/acct_login_001" <<'PY'
+import pathlib
+import sys
+
+log = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+expected = pathlib.Path(sys.argv[2]).resolve()
+assert f"vibeproxy-home={expected}" in log, log
+PY
+printf '{"tokens":{"access_token":"YOUR_ACCESS_TOKEN_HERE_REFRESHED","account_id":"acct-login"}}\n' > "$temp_home/.clisess/homes/codex/acct_login_001/auth.json"
+status_json=$(PATH="$temp_home/mockbin:$PATH" HOME="$temp_home" "$temp_home/bin/cxs" status --json)
+python3 - <<'PY' "$status_json"
+import json
+import sys
+
+rows = {(row["provider"], row["name"]): row for row in json.loads(sys.argv[1])}
+assert rows[("codex", "acct_login_001")]["kind"] == "canonical"
+assert rows[("codex", "acct_login_001")]["state"] == "ready"
+assert rows[("vibeproxy", "acct_login_001")]["kind"] == "mirror"
+assert rows[("vibeproxy", "acct_login_001")]["state"] == "stale"
+assert rows[("vibeproxy", "acct_login_001")]["source"] == "codex/acct_login_001"
+assert rows[("vibeproxy", "acct_login_002")]["kind"] == "mirror"
+assert rows[("vibeproxy", "acct_login_002")]["state"] == "synced"
+assert rows[("vibeproxy", "acct_login_002")]["source"] == "codex/acct_login_002"
+PY
+doctor_json=$(PATH="$temp_home/mockbin:$PATH" HOME="$temp_home" "$temp_home/bin/cxs" doctor --json)
+python3 - <<'PY' "$doctor_json"
+import json
+import sys
+
+report = json.loads(sys.argv[1])
+assert report["healthy"] is False
+assert report["counts"]["issues"] >= 1
+issues = {(item["provider"], item["name"], item["code"]): item for item in report["issues"]}
+assert ("vibeproxy", "acct_login_001", "stale-mirror") in issues
+assert issues[("vibeproxy", "acct_login_001", "stale-mirror")]["fix"] == "cxs sync codex/acct_login_001 --to vibeproxy:acct_login_001"
+PY
+if PATH="$temp_home/mockbin:$PATH" HOME="$temp_home" "$temp_home/bin/cxs" doctor --strict >/dev/null 2>&1; then
+  echo "expected doctor strict failure" >&2
+  exit 1
+fi
+PATH="$temp_home/mockbin:$PATH" HOME="$temp_home" "$temp_home/bin/cxs" sync codex acct_login_001 --to vibeproxy >/dev/null
+python3 - "$temp_home/.clisess/homes/vibeproxy/acct_login_001/auth.json" <<'PY'
+import json
+import pathlib
+import sys
+
+payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert payload["tokens"]["access_token"] == "YOUR_ACCESS_TOKEN_HERE_REFRESHED"
+PY
+PATH="$temp_home/mockbin:$PATH" HOME="$temp_home" "$temp_home/bin/cxs" status --provider vibeproxy | grep -E 'vibeproxy[[:space:]]+acct_login_001[[:space:]]+mirror[[:space:]]+synced[[:space:]]+file[[:space:]]+codex/acct_login_001' >/dev/null
+PATH="$temp_home/mockbin:$PATH" HOME="$temp_home" "$temp_home/bin/cxs" doctor --provider vibeproxy --strict >/dev/null
+if PATH="$temp_home/mockbin:$PATH" HOME="$temp_home" "$temp_home/bin/cxs" sync codex acct_login_001 --to codex:acct_login_002 >/dev/null 2>"$temp_home/cxs-sync.err"; then
+  echo "expected sync guard failure" >&2
+  exit 1
+fi
+grep -F 'target session exists and is not a mirror: codex/acct_login_002' "$temp_home/cxs-sync.err" >/dev/null
+mkdir -p "$temp_home/mock-cli-proxy"
+cat > "$temp_home/mock-cli-proxy/codex-imported@example.com-plus.json" <<'EOF'
+{"access_token":"YOUR_ACCESS_TOKEN_HERE_IMPORTED","refresh_token":"YOUR_REFRESH_TOKEN_HERE_IMPORTED","id_token":"YOUR_ID_TOKEN_HERE_IMPORTED","account_id":"imported-account","email":"imported@example.com","type":"codex"}
+EOF
+HOME="$temp_home" "$temp_home/bin/cxs" import-cli-proxy --source-dir "$temp_home/mock-cli-proxy" >/dev/null
+test -f "$temp_home/.clisess/homes/codex/imported_at_example_com_imported/auth.json"
+cat > "$temp_home/mock-clisess-quota.py" <<'PY'
+#!/usr/bin/env python3
+import pathlib
+import sys
+
+account_dir = pathlib.Path(sys.argv[sys.argv.index("--account-dir") + 1])
+if account_dir.name == "imported_at_example_com_imported":
+    sys.stderr.write('usage request failed: HTTP 402 {"detail":{"code":"deactivated_workspace"}}\n')
+    raise SystemExit(1)
+print("oauth\x1f\x1f\x1f\x1f0\x1f0\x1f0\x1f100\x1f9999999999\x1f5h\x1f0\x1f100\x1f9999999999\x1fweekly")
+PY
+chmod +x "$temp_home/mock-clisess-quota.py"
+HOME="$temp_home" CLISESS_QUOTA_HELPER="$temp_home/mock-clisess-quota.py" "$temp_home/bin/cxs" cleanup-deactivated --provider codex >/dev/null
+test ! -d "$temp_home/.clisess/homes/codex/imported_at_example_com_imported"
+python3 - "$temp_home/.clisess/sessions.json" <<'PY'
+import json
+import pathlib
+import sys
+
+store = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+rows = {(row["provider"], row["name"]): row for row in store["sessions"]}
+assert ("codex", "acct_login_001") in rows
+assert ("codex", "acct_login_002") in rows
+assert ("vibeproxy", "acct_login_001") in rows
+assert rows[("codex", "acct_login_001")]["home"] != rows[("codex", "acct_login_002")]["home"]
+assert rows[("vibeproxy", "acct_login_001")]["home"] != rows[("codex", "acct_login_001")]["home"]
+assert rows[("vibeproxy", "acct_login_001")]["source_provider"] == "codex"
+assert rows[("vibeproxy", "acct_login_001")]["source_name"] == "acct_login_001"
+assert ("codex", "imported_at_example_com_imported") not in rows
+PY
 
 mkdir -p "$temp_home/.codex-accounts/acct_001"
 printf '{"tokens":{"access_token":"YOUR_ACCESS_TOKEN_HERE_MAIN"}}\n' > "$temp_home/.codex-accounts/acct_001/auth.json"
@@ -386,6 +516,27 @@ HOME="$temp_home" "$temp_home/bin/cx" recover acct_001 >/dev/null
 test ! -f "$temp_home/.codex-accounts/.state/disabled/acct_001.disabled"
 test ! -f "$temp_home/.codex-accounts/.state/cooldowns/acct_001.until"
 
+cat > "$temp_home/mock_quota.py" <<'PY'
+#!/usr/bin/env python3
+import sys
+
+sys.stderr.write('usage request failed: HTTP 402 {"detail":{"code":"deactivated_workspace"}}\n')
+raise SystemExit(1)
+PY
+chmod +x "$temp_home/mock_quota.py"
+mkdir -p "$temp_home/.codex-accounts/.state/quota-cache"
+printf '%s\n' 'cached-quota' > "$temp_home/.codex-accounts/.state/quota-cache/acct_001.oauth.tsv"
+HOME="$temp_home" zsh -c '
+  source ./codex-orbit.zsh
+  function _codex_quota_helper() { printf "%s\n" "$HOME/mock_quota.py"; }
+  _codex_account_quota_snapshot acct_001 tsv 1 oauth
+' >/dev/null 2>"$temp_home/quota-disable.err" || true
+test -f "$temp_home/.codex-accounts/.state/disabled/acct_001.disabled"
+grep -F 'auto:deactivated_workspace' "$temp_home/.codex-accounts/.state/disabled/acct_001.disabled" >/dev/null
+test ! -f "$temp_home/.codex-accounts/.state/quota-cache/acct_001.oauth.tsv"
+HOME="$temp_home" "$temp_home/bin/cx" recover acct_001 >/dev/null
+test ! -f "$temp_home/.codex-accounts/.state/disabled/acct_001.disabled"
+
 cat > "$temp_home/mockbin/ssh" <<'SH'
 #!/bin/sh
 printf 'ssh %s\n' "$*" >> "$HOME/ssh.log"
@@ -611,6 +762,68 @@ exit 0
 SH
 chmod +x "$temp_home/mockbin/codex"
 
+printf '{"tokens":{"access_token":"YOUR_ACCESS_TOKEN_HERE_1","id_token":"YOUR_ID_TOKEN_HERE_1","account_id":"acct-hot-1"}}\n' > "$temp_home/.clisess/homes/codex/acct_login_001/auth.json"
+printf '{"tokens":{"access_token":"YOUR_ACCESS_TOKEN_HERE_2","id_token":"YOUR_ID_TOKEN_HERE_2","account_id":"acct-hot-2"}}\n' > "$temp_home/.clisess/homes/codex/acct_login_002/auth.json"
+cat > "$temp_home/mock-hot-quota.py" <<'PY'
+#!/usr/bin/env python3
+import pathlib
+import sys
+
+home = pathlib.Path(sys.argv[sys.argv.index("--account-dir") + 1])
+remaining = 0 if home.name == "acct_login_001" else 80
+print(f"oauth\x1f\x1f\x1f\x1f0\x1f0\x1f{100 - remaining}\x1f{remaining}\x1f9999999999\x1f5h\x1f0\x1f100\x1f9999999999\x1fweekly")
+PY
+chmod +x "$temp_home/mock-hot-quota.py"
+
+read -r clisess_hot_app_port clisess_hot_control_port <<EOF
+$(python3 - <<'PY'
+import socket
+
+def reserve():
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    return port
+
+print(reserve(), reserve())
+PY
+)
+EOF
+
+PATH="$temp_home/mockbin:$PATH" HOME="$temp_home" CODEX_ROTATOR_QUOTA_HELPER="$temp_home/mock-hot-quota.py" "$temp_home/bin/cxr" start acct_login_001 --app-port "$clisess_hot_app_port" --control-port "$clisess_hot_control_port" >/dev/null
+PATH="$temp_home/mockbin:$PATH" HOME="$temp_home" "$temp_home/bin/cxr" status --json | python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["running"] is True; assert data["account"] == "acct_login_001"; assert data["ready"] is True; assert data["home"].endswith("/.clisess/homes/codex/acct_login_001")'
+PATH="$temp_home/mockbin:$PATH" HOME="$temp_home" "$temp_home/bin/cxr" switch acct_login_002 >/dev/null
+PATH="$temp_home/mockbin:$PATH" HOME="$temp_home" "$temp_home/bin/cxr" status --json | python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["account"] == "acct_login_002"; assert data["auth_mode"] == "chatgptAuthTokens"; assert data["home"].endswith("/.clisess/homes/codex/acct_login_002")'
+PATH="$temp_home/mockbin:$PATH" HOME="$temp_home" "$temp_home/bin/cxr" attach -- probe-clisess-hot >/dev/null
+grep -F -- "--remote ws://127.0.0.1:$clisess_hot_app_port probe-clisess-hot" "$temp_home/hot-codex.log" >/dev/null
+PATH="$temp_home/mockbin:$PATH" HOME="$temp_home" "$temp_home/bin/cxr" switch acct_login_001 >/dev/null
+PATH="$temp_home/mockbin:$PATH" HOME="$temp_home" CODEX_ROTATOR_QUOTA_HELPER="$temp_home/mock-hot-quota.py" "$temp_home/bin/cxr" autoswitch enable --interval 1 >/dev/null
+python3 - "$temp_home" <<'PY'
+import json
+import os
+import pathlib
+import subprocess
+import sys
+import time
+
+home = pathlib.Path(sys.argv[1])
+cmd = [str(home / "bin" / "cxr"), "status", "--json"]
+env = {"HOME": str(home), "PATH": f"{home / 'mockbin'}:{os.environ['PATH']}", "CODEX_ROTATOR_QUOTA_HELPER": str(home / "mock-hot-quota.py")}
+for _ in range(40):
+    payload = json.loads(subprocess.check_output(cmd, text=True, env=env))
+    event = (payload.get("auto_switch") or {}).get("event") or {}
+    if payload.get("account") == "acct_login_002" and event.get("reason") == "quota_exhausted":
+        break
+    time.sleep(0.1)
+else:
+    raise SystemExit("cxr auto-switch did not switch accounts")
+PY
+PATH="$temp_home/mockbin:$PATH" HOME="$temp_home" "$temp_home/bin/cxr" autoswitch status | grep -F 'auto-switch: enabled' >/dev/null
+PATH="$temp_home/mockbin:$PATH" HOME="$temp_home" "$temp_home/bin/cxr" autoswitch disable >/dev/null
+PATH="$temp_home/mockbin:$PATH" HOME="$temp_home" "$temp_home/bin/cxr" stop >/dev/null
+PATH="$temp_home/mockbin:$PATH" HOME="$temp_home" "$temp_home/bin/cxr" status --json | python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["running"] is False'
+
 mkdir -p "$temp_home/.codex-accounts/acct_010" "$temp_home/.codex-accounts/acct_011"
 printf '{"tokens":{"access_token":"YOUR_ACCESS_TOKEN_HERE_1","id_token":"YOUR_ID_TOKEN_HERE_1","account_id":"acct-hot-1"}}\n' > "$temp_home/.codex-accounts/acct_010/auth.json"
 printf '{"tokens":{"access_token":"YOUR_ACCESS_TOKEN_HERE_2","id_token":"YOUR_ID_TOKEN_HERE_2","account_id":"acct-hot-2"}}\n' > "$temp_home/.codex-accounts/acct_011/auth.json"
@@ -833,3 +1046,4 @@ PY
 
 HOME="$temp_home" ./uninstall.sh --bin-dir "$temp_home/bin" --install-dir "$temp_home/share/codex-orbit"
 test ! -e "$temp_home/bin/cx"
+test ! -e "$temp_home/bin/cxr"

@@ -83,8 +83,8 @@ final class StatusStore: ObservableObject {
     private var lastDaemonLaunchAttemptAt: Date?
 
     init() {
-        let rawURL = ProcessInfo.processInfo.environment["CODEX_ORBIT_DAEMON_URL"]
-            ?? ProcessInfo.processInfo.environment["CODEX_MENUBAR_DAEMON_URL"]
+        let rawURL = ProcessInfo.processInfo.environment["CODEX_MENUBAR_DAEMON_URL"]
+            ?? ProcessInfo.processInfo.environment["CODEX_ORBIT_DAEMON_URL"]
             ?? "http://127.0.0.1:8787"
         self.daemonURL = URL(string: rawURL) ?? URL(string: "http://127.0.0.1:8787")!
         self.notificationsEnabled = Bundle.main.bundleURL.pathExtension == "app"
@@ -212,10 +212,10 @@ final class StatusStore: ObservableObject {
         guard event.id != lastAutoSwitchEventID else { return }
         lastAutoSwitchEventID = event.id
         let content = UNMutableNotificationContent()
-        content.title = "Codex Orbit"
+        content.title = "Codex Menu Bar"
         content.body = "Auto-switched from \(event.from_account) to \(event.to_account)."
         let request = UNNotificationRequest(
-            identifier: "codex-orbit.auto-switch.\(event.id)",
+            identifier: "codex-menubar.auto-switch.\(event.id)",
             content: content,
             trigger: nil
         )
@@ -396,7 +396,7 @@ extension DaemonSnapshot.Account {
 
     var planLabel: String {
         let rawPlan = quota?.plan.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return rawPlan.isEmpty ? "Orbit" : rawPlan
+        return rawPlan.isEmpty ? "Codex" : rawPlan
     }
 
     var sourceLabel: String {
@@ -520,47 +520,6 @@ enum Palette {
     static let orange = blue
     static let red = blue
     static let green = blue
-}
-
-struct QuotaPanelBackground: View {
-    let progress: Double
-    let tint: Color
-
-    private var clampedProgress: Double {
-        min(max(progress, 0), 100)
-    }
-
-    var body: some View {
-        GeometryReader { geometry in
-            let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
-            let progressWidth = geometry.size.width * clampedProgress / 100
-
-            ZStack(alignment: .leading) {
-                shape
-                    .fill(Color.black.opacity(0.80))
-                shape
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.white.opacity(0.07), Color.white.opacity(0.03)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                Rectangle()
-                    .fill(
-                        LinearGradient(
-                            colors: [tint.opacity(0.42), tint.opacity(0.18)],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .frame(width: progressWidth)
-            }
-            .clipShape(shape)
-            .overlay(shape.stroke(Palette.border, lineWidth: 1))
-            .shadow(color: .black.opacity(0.22), radius: 16, x: 0, y: 8)
-        }
-    }
 }
 
 struct SoftDivider: View {
@@ -816,20 +775,15 @@ struct MenuActionRow: View {
 }
 
 struct MenuPanel<Content: View>: View {
-    private let progress: Double
-    private let tint: Color
     private let content: Content
 
-    init(progress: Double = 0, tint: Color = Palette.blue, @ViewBuilder content: () -> Content) {
-        self.progress = progress
-        self.tint = tint
+    init(@ViewBuilder content: () -> Content) {
         self.content = content()
     }
 
     var body: some View {
         ZStack {
             ClearWindowBackground()
-            QuotaPanelBackground(progress: progress, tint: tint)
             content
                 .padding(.horizontal, 10)
                 .padding(.vertical, 10)
@@ -942,15 +896,13 @@ struct MenuContentView: View {
     }
 
     var body: some View {
-        let selected = store.snapshot.flatMap { selectedAccount(from: $0) }
-
-        MenuPanel(progress: selected?.primaryUsedPercent ?? 0, tint: selected?.accentColor ?? Palette.blue) {
+        MenuPanel {
             VStack(alignment: .leading, spacing: 7) {
                 if let snapshot = store.snapshot,
                    let selected = selectedAccount(from: snapshot) {
                     HStack(alignment: .top) {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Codex Orbit")
+                            Text("Codex Menu Bar")
                                 .font(.system(size: 18, weight: .bold))
                                 .foregroundStyle(Palette.text)
                             Text(updatedText(epoch: snapshot.generated_at_epoch))
@@ -1122,7 +1074,7 @@ struct MenuContentView: View {
                     }
                 } else if let lastError = store.lastError {
                     VStack(alignment: .leading, spacing: 7) {
-                        Text("Codex Orbit")
+                        Text("Codex Menu Bar")
                             .font(.system(size: 18, weight: .bold))
                             .foregroundStyle(Palette.text)
                         Text(store.daemonLaunching ? "Starting daemon…" : "Daemon not reachable")
@@ -1151,7 +1103,7 @@ struct MenuContentView: View {
                     }
                 } else {
                     VStack(alignment: .leading, spacing: 7) {
-                        Text("Codex Orbit")
+                        Text("Codex Menu Bar")
                             .font(.system(size: 18, weight: .bold))
                             .foregroundStyle(Palette.text)
                         Text("Connecting to the daemon and loading account health…")
@@ -1171,7 +1123,7 @@ struct MenuContentView: View {
 }
 
 @main
-struct CodexOrbitMenuApp: App {
+struct CodexMenuBarApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var store = StatusStore()
 

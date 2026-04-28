@@ -12,10 +12,11 @@ function usage() {
   console.error(
     [
       "Usage:",
-      "  codex-orbit-hot.js serve --accounts-dir <dir> --account <acct> --app-port <port> --control-port <port> --state-file <path> --app-log-file <path> [--codex-bin <path>]",
-      "  codex-orbit-hot.js start --accounts-dir <dir> [--account <acct>] --app-port <port> --control-port <port> --state-file <path> --log-file <path> --app-log-file <path> [--allow-port-fallback <0|1>] [--idle-seconds <seconds>] [--codex-bin <path>]",
+      "  codex-orbit-hot.js serve (--accounts-dir <dir> | --sessions-file <path> [--provider <name>]) --account <acct> --app-port <port> --control-port <port> --state-file <path> --app-log-file <path> [--codex-bin <path>] [--auto-switch <0|1>] [--auto-switch-interval <seconds>]",
+      "  codex-orbit-hot.js start (--accounts-dir <dir> | --sessions-file <path> [--provider <name>]) [--account <acct>] --app-port <port> --control-port <port> --state-file <path> --log-file <path> --app-log-file <path> [--allow-port-fallback <0|1>] [--idle-seconds <seconds>] [--codex-bin <path>] [--auto-switch <0|1>] [--auto-switch-interval <seconds>]",
       "  codex-orbit-hot.js status --state-file <path> [--json]",
       "  codex-orbit-hot.js switch --state-file <path> --account <acct>",
+      "  codex-orbit-hot.js autoswitch --state-file <path> --enabled <0|1> [--interval <seconds>]",
       "  codex-orbit-hot.js attach-start --state-file <path> --client-id <id> [--pid <pid>]",
       "  codex-orbit-hot.js attach-stop --state-file <path> --client-id <id>",
       "  codex-orbit-hot.js stop --state-file <path>",
@@ -102,6 +103,89 @@ function accountAuthFile(accountsDir, account) {
   return path.join(accountsDir, account, "auth.json");
 }
 
+function sessionHomeAuthFile(homeDir) {
+  return path.join(homeDir, "auth.json");
+}
+
+function providerName(value) {
+  return value || "codex";
+}
+
+function buildSessionSource(options) {
+  const accountsDir = options["accounts-dir"];
+  const sessionsFile = options["sessions-file"];
+
+  if (accountsDir && sessionsFile) {
+    throw new Error("choose one of --accounts-dir or --sessions-file");
+  }
+  if (accountsDir) {
+    return {
+      kind: "accounts-dir",
+      accountsDir: path.resolve(accountsDir),
+      provider: "codex",
+    };
+  }
+  if (sessionsFile) {
+    return {
+      kind: "sessions-file",
+      sessionsFile: path.resolve(sessionsFile),
+      provider: providerName(options.provider),
+    };
+  }
+
+  throw new Error("missing --accounts-dir or --sessions-file");
+}
+
+function appendSessionSourceArgs(target, sessionSource) {
+  if (sessionSource.kind === "accounts-dir") {
+    target.push("--accounts-dir", sessionSource.accountsDir);
+    return;
+  }
+  target.push("--sessions-file", sessionSource.sessionsFile, "--provider", sessionSource.provider);
+}
+
+function loadSessionRecord(sessionSource, account) {
+  const store = readJsonFileSync(sessionSource.sessionsFile);
+  const sessions = Array.isArray(store && store.sessions) ? store.sessions : [];
+  const row = sessions.find(
+    (item) =>
+      item &&
+      item.provider === sessionSource.provider &&
+      item.name === account,
+  );
+  if (!row) {
+    throw new Error(`unknown session ${sessionSource.provider}/${account}`);
+  }
+  if (!row.home) {
+    throw new Error(`session ${sessionSource.provider}/${account} does not have a home path`);
+  }
+  return row;
+}
+
+function resolveAccountHome(sessionSource, account) {
+  if (sessionSource.kind === "accounts-dir") {
+    return path.resolve(sessionSource.accountsDir, account);
+  }
+  return path.resolve(loadSessionRecord(sessionSource, account).home);
+}
+
+function listSourceAccounts(sessionSource) {
+  if (sessionSource.kind === "accounts-dir") {
+    return fs
+      .readdirSync(sessionSource.accountsDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+      .map((entry) => entry.name)
+      .sort();
+  }
+
+  const store = readJsonFileSync(sessionSource.sessionsFile);
+  const sessions = Array.isArray(store && store.sessions) ? store.sessions : [];
+  return sessions
+    .filter((item) => item && item.provider === sessionSource.provider && item.name)
+    .map((item) => item.name)
+    .sort();
+}
+
 function keychainSupported() {
   return process.platform === "darwin" && (process.env.CODEX_ORBIT_KEYCHAIN_ENABLED || "1") !== "0";
 }
@@ -114,25 +198,46 @@ function securityBinary() {
   return process.env.CODEX_ORBIT_SECURITY_BIN || "security";
 }
 
-function loadAccountAuth(accountsDir, account) {
-  const authFile = accountAuthFile(accountsDir, account);
+function pythonBinary() {
+  return process.env.PYTHON3_BIN || "python3";
+}
+
+function quotaHelperPath() {
+  return (
+    process.env.CODEX_ORBIT_QUOTA_HELPER ||
+    process.env.CODEX_ROTATOR_QUOTA_HELPER ||
+    process.env.CLISESS_QUOTA_HELPER ||
+    path.join(__dirname, "codex-orbit-quota.py")
+  );
+}
+
+function loadSessionAuth(homeDir, label) {
+  const authFile = sessionHomeAuthFile(homeDir);
   if (fs.existsSync(authFile)) {
     return readJsonFileSync(authFile);
   }
   if (!keychainSupported()) {
-    throw new Error(`account ${account} does not have auth.json`);
+    throw new Error(`${label} does not have auth.json`);
   }
-  const accountDir = path.resolve(accountsDir, account);
-  const output = execFileSync(
-    securityBinary(),
-    ["find-generic-password", "-s", keychainServiceName(), "-a", accountDir, "-w"],
-    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
-  );
-  return JSON.parse(output);
+  const accountDir = path.resolve(homeDir);
+  try {
+    const output = execFileSync(
+      securityBinary(),
+      ["find-generic-password", "-s", keychainServiceName(), "-a", accountDir, "-w"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    );
+    return JSON.parse(output);
+  } catch (error) {
+    const detail = `${error.stdout || ""}\n${error.stderr || ""}`.toLowerCase();
+    if (detail.includes("could not be found") || detail.includes("not be found in the keychain")) {
+      throw new Error(`${label} does not have auth.json or a matching keychain entry`);
+    }
+    throw error;
+  }
 }
 
-function loadChatgptTokens(accountsDir, account) {
-  const auth = loadAccountAuth(accountsDir, account);
+function loadChatgptTokens(homeDir, label) {
+  const auth = loadSessionAuth(homeDir, label);
   const tokens = auth.tokens || {};
   const accessToken =
     tokens.access_token || tokens.accessToken || auth.access_token || auth.accessToken;
@@ -147,15 +252,54 @@ function loadChatgptTokens(accountsDir, account) {
 
   if (!accessToken || !idToken) {
     throw new Error(
-      `account ${account} does not have ChatGPT access_token/id_token credentials in auth.json`,
+      `${label} does not have ChatGPT access_token/id_token credentials in auth.json`,
     );
   }
 
   if (!chatgptAccountId) {
-    throw new Error(`account ${account} does not have a ChatGPT account id in auth.json`);
+    throw new Error(`${label} does not have a ChatGPT account id in auth.json`);
   }
 
   return { accessToken, idToken, chatgptAccountId };
+}
+
+function parseQuotaSnapshot(tsv) {
+  const text = String(tsv || "").trim();
+  if (!text) {
+    return { remaining: null, available: false, deactivated: false };
+  }
+  const fields = text.split("\x1f");
+  const remaining = Number(fields[7]);
+  return {
+    remaining: Number.isFinite(remaining) ? remaining : null,
+    available: true,
+    deactivated: false,
+  };
+}
+
+function quotaStateForHome(homeDir) {
+  const helper = quotaHelperPath();
+  if (!fs.existsSync(helper)) {
+    return { remaining: null, available: false, deactivated: false };
+  }
+
+  try {
+    const output = execFileSync(
+      pythonBinary(),
+      [helper, "snapshot", "--account-dir", homeDir, "--format", "tsv", "--source", "oauth"],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    return parseQuotaSnapshot(output);
+  } catch (error) {
+    const detail = `${error.stdout || ""}\n${error.stderr || ""}`;
+    if (detail.includes("deactivated_workspace")) {
+      return { remaining: 0, available: false, deactivated: true };
+    }
+    return { remaining: null, available: false, deactivated: false };
+  }
 }
 
 function formatActionLabel(action) {
@@ -188,6 +332,18 @@ function stateToText(payload) {
   }
   if (payload.auth_mode) {
     lines.push(`Auth mode: ${payload.auth_mode}`);
+  }
+  if (payload.auto_switch) {
+    lines.push(`Auto-switch: ${payload.auto_switch.enabled ? "enabled" : "disabled"}`);
+    if (payload.auto_switch.interval_seconds) {
+      lines.push(`Auto-switch interval: ${payload.auto_switch.interval_seconds}s`);
+    }
+    if (payload.auto_switch.event) {
+      const event = payload.auto_switch.event;
+      lines.push(
+        `Last auto-switch: ${event.from_account || "-"} -> ${event.to_account || "-"} (${event.reason || "unknown"})`,
+      );
+    }
   }
   if (payload.last_action) {
     lines.push(`Session: ${formatActionLabel(payload.last_action)}`);
@@ -323,7 +479,7 @@ async function choosePort(preferredPort, allowFallback, reservedPorts = new Set(
 
 class AppServerController {
   constructor(options) {
-    this.accountsDir = options.accountsDir;
+    this.sessionSource = options.sessionSource;
     this.account = options.account;
     this.appPort = Number(options.appPort);
     this.controlPort = Number(options.controlPort);
@@ -346,8 +502,23 @@ class AppServerController {
     this.activeClients = new Map();
     this.lastIdleAt = Date.now();
     this.maintenanceTimer = null;
+    this.autoSwitchEnabled = toBooleanFlag(options.autoSwitch);
+    this.autoSwitchInterval = Math.max(1, toPositiveInteger(options.autoSwitchInterval, 15));
+    this.autoSwitchTimer = null;
+    this.autoSwitchEvent = null;
     this.lastAction = null;
     this.lastActionAt = null;
+  }
+
+  accountLabel(account) {
+    if (this.sessionSource.kind === "accounts-dir") {
+      return `account ${account}`;
+    }
+    return `session ${this.sessionSource.provider}/${account}`;
+  }
+
+  resolveAccountHome(account) {
+    return resolveAccountHome(this.sessionSource, account);
   }
 
   async start() {
@@ -362,6 +533,7 @@ class AppServerController {
     this.ready = true;
     await this.writeState();
     this.startMaintenanceLoop();
+    this.startAutoSwitchLoop();
   }
 
   async startAppServer() {
@@ -369,10 +541,11 @@ class AppServerController {
       flags: "a",
       mode: 0o600,
     });
+    const homeDir = this.resolveAccountHome(this.account);
 
     const childEnv = {
       ...process.env,
-      CODEX_HOME: path.join(this.accountsDir, this.account),
+      CODEX_HOME: homeDir,
     };
 
     this.child = spawn(this.codexBin, ["app-server", "--listen", this.appUrl], {
@@ -459,6 +632,13 @@ class AppServerController {
         }
 
         if (req.method === "GET" && req.url === "/v1/status") {
+          if (this.autoSwitchEnabled) {
+            try {
+              await this.maybeAutoSwitch();
+            } catch (_error) {
+              // Background loop remains authoritative; status should still respond.
+            }
+          }
           this.writeJson(res, 200, this.statusPayload());
           return;
         }
@@ -473,6 +653,14 @@ class AppServerController {
           await this.switchAccount(account);
           await this.writeState();
           this.writeJson(res, 200, this.statusPayload());
+          return;
+        }
+
+        if (req.method === "POST" && req.url === "/v1/auto-switch") {
+          const body = await this.readJsonBody(req);
+          const enabled = toBooleanFlag(body.enabled);
+          const payload = await this.setAutoSwitch(enabled, body.interval);
+          this.writeJson(res, 200, payload);
           return;
         }
 
@@ -519,7 +707,8 @@ class AppServerController {
 
     this.switchPromise = (async () => {
       const previousAccount = this.account;
-      const tokens = loadChatgptTokens(this.accountsDir, account);
+      const homeDir = this.resolveAccountHome(account);
+      const tokens = loadChatgptTokens(homeDir, this.accountLabel(account));
       this.pendingNotifications = [];
       try {
         await this.request("account/logout", {});
@@ -609,6 +798,101 @@ class AppServerController {
     this.lastActionAt = new Date().toISOString();
   }
 
+  availableAccounts() {
+    return listSourceAccounts(this.sessionSource).filter((account) => {
+      try {
+        loadChatgptTokens(this.resolveAccountHome(account), this.accountLabel(account));
+        return true;
+      } catch (_error) {
+        return false;
+      }
+    });
+  }
+
+  nextAutoSwitchTarget() {
+    const accounts = this.availableAccounts();
+    if (accounts.length <= 1 || !this.account) {
+      return null;
+    }
+
+    const currentIndex = accounts.indexOf(this.account);
+    const ordered =
+      currentIndex >= 0
+        ? [...accounts.slice(currentIndex + 1), ...accounts.slice(0, currentIndex)]
+        : accounts;
+    const candidates = ordered.filter((account) => account !== this.account);
+    if (candidates.length === 0) {
+      return null;
+    }
+
+    const quotaReady = candidates.filter((account) => {
+      const quota = quotaStateForHome(this.resolveAccountHome(account));
+      return quota.remaining != null && quota.remaining > 0 && !quota.deactivated;
+    });
+    if (quotaReady.length > 0) {
+      return quotaReady[0];
+    }
+
+    const fallback = candidates.find((account) => !quotaStateForHome(this.resolveAccountHome(account)).deactivated);
+    return fallback || candidates[0];
+  }
+
+  async maybeAutoSwitch() {
+    if (!this.autoSwitchEnabled || !this.ready || !this.account) {
+      return;
+    }
+
+    const currentQuota = quotaStateForHome(this.resolveAccountHome(this.account));
+    if (!currentQuota.deactivated && (currentQuota.remaining == null || currentQuota.remaining > 0)) {
+      return;
+    }
+
+    const target = this.nextAutoSwitchTarget();
+    if (!target || target === this.account) {
+      return;
+    }
+
+    const previousAccount = this.account;
+    await this.switchAccount(target);
+    this.autoSwitchEvent = {
+      id: `${Date.now()}:${previousAccount}:${target}`,
+      from_account: previousAccount,
+      to_account: target,
+      reason: currentQuota.deactivated ? "deactivated_workspace" : "quota_exhausted",
+      created_at: new Date().toISOString(),
+    };
+    await this.writeState();
+  }
+
+  startAutoSwitchLoop() {
+    if (this.autoSwitchTimer || !this.autoSwitchEnabled) {
+      return;
+    }
+
+    this.autoSwitchTimer = setInterval(() => {
+      void this.maybeAutoSwitch().catch(() => {});
+    }, this.autoSwitchInterval * 1000);
+    this.autoSwitchTimer.unref();
+  }
+
+  async setAutoSwitch(enabled, interval) {
+    this.autoSwitchEnabled = Boolean(enabled);
+    if (interval != null) {
+      this.autoSwitchInterval = Math.max(1, toPositiveInteger(interval, this.autoSwitchInterval));
+    }
+
+    if (this.autoSwitchTimer) {
+      clearInterval(this.autoSwitchTimer);
+      this.autoSwitchTimer = null;
+    }
+    if (this.autoSwitchEnabled) {
+      this.startAutoSwitchLoop();
+      await this.maybeAutoSwitch();
+    }
+    await this.writeState();
+    return this.statusPayload();
+  }
+
   async runMaintenance() {
     if (this.shuttingDown) {
       return;
@@ -679,7 +963,10 @@ class AppServerController {
     }
 
     try {
-      const tokens = loadChatgptTokens(this.accountsDir, this.account);
+      const tokens = loadChatgptTokens(
+        this.resolveAccountHome(this.account),
+        this.accountLabel(this.account),
+      );
       this.send({
         id: requestId,
         result: {
@@ -758,6 +1045,14 @@ class AppServerController {
       this.idleSeconds > 0 && this.activeClients.size === 0 && this.lastIdleAt != null
         ? new Date(this.lastIdleAt + this.idleSeconds * 1000).toISOString()
         : null;
+    let activeHome = null;
+    if (this.account) {
+      try {
+        activeHome = this.resolveAccountHome(this.account);
+      } catch (_error) {
+        activeHome = null;
+      }
+    }
 
     return {
       running: true,
@@ -772,6 +1067,13 @@ class AppServerController {
       control_port: this.controlPort,
       controller_pid: process.pid,
       app_server_pid: this.child ? this.child.pid : null,
+      provider: this.sessionSource.provider,
+      home: activeHome,
+      auto_switch: {
+        enabled: this.autoSwitchEnabled,
+        interval_seconds: this.autoSwitchInterval,
+        event: this.autoSwitchEvent,
+      },
       active_clients: this.activeClients.size,
       idle_timeout_seconds: this.idleSeconds,
       idle_shutdown_at: idleShutdownAt,
@@ -810,6 +1112,10 @@ class AppServerController {
       clearInterval(this.maintenanceTimer);
       this.maintenanceTimer = null;
     }
+    if (this.autoSwitchTimer) {
+      clearInterval(this.autoSwitchTimer);
+      this.autoSwitchTimer = null;
+    }
 
     await removeFile(this.stateFile);
 
@@ -836,22 +1142,16 @@ class AppServerController {
 }
 
 async function handleServe(options) {
-  const required = [
-    "accounts-dir",
-    "account",
-    "app-port",
-    "control-port",
-    "state-file",
-    "app-log-file",
-  ];
+  const required = ["account", "app-port", "control-port", "state-file", "app-log-file"];
   for (const key of required) {
     if (!options[key]) {
       throw new Error(`missing --${key}`);
     }
   }
+  const sessionSource = buildSessionSource(options);
 
   const controller = new AppServerController({
-    accountsDir: options["accounts-dir"],
+    sessionSource,
     account: options.account,
     appPort: options["app-port"],
     controlPort: options["control-port"],
@@ -859,6 +1159,8 @@ async function handleServe(options) {
     appLogFile: options["app-log-file"],
     idleSeconds: options["idle-seconds"],
     codexBin: options["codex-bin"] || "codex",
+    autoSwitch: options["auto-switch"],
+    autoSwitchInterval: options["auto-switch-interval"],
   });
 
   process.on("SIGTERM", () => {
@@ -872,24 +1174,37 @@ async function handleServe(options) {
 }
 
 async function handleStart(options) {
-  const required = [
-    "accounts-dir",
-    "app-port",
-    "control-port",
-    "state-file",
-    "log-file",
-    "app-log-file",
-  ];
+  const required = ["app-port", "control-port", "state-file", "log-file", "app-log-file"];
   for (const key of required) {
     if (!options[key]) {
       throw new Error(`missing --${key}`);
     }
   }
+  const sessionSource = buildSessionSource(options);
 
   const desiredAccount = options.account || null;
   const current = await getLiveState(options["state-file"]);
 
   if (current && current.running) {
+    if (options["auto-switch"] != null || options["auto-switch-interval"] != null) {
+      const updated = await fetchJson(`${current.control_url}/v1/auto-switch`, {
+        method: "POST",
+        body: JSON.stringify({
+          enabled: options["auto-switch"] == null ? current.auto_switch?.enabled : options["auto-switch"],
+          interval: options["auto-switch-interval"],
+        }),
+      });
+      if (desiredAccount && current.account !== desiredAccount) {
+        const switched = await fetchJson(`${current.control_url}/v1/switch`, {
+          method: "POST",
+          body: JSON.stringify({ account: desiredAccount }),
+        });
+        console.log(`${JSON.stringify(switched)}\n`);
+        return;
+      }
+      console.log(`${JSON.stringify({ ...updated, request_action: "reused" })}\n`);
+      return;
+    }
     if (desiredAccount && current.account !== desiredAccount) {
       const updated = await fetchJson(`${current.control_url}/v1/switch`, {
         method: "POST",
@@ -926,8 +1241,6 @@ async function handleStart(options) {
   const childArgs = [
     __filename,
     "serve",
-    "--accounts-dir",
-    options["accounts-dir"],
     "--account",
     desiredAccount,
     "--app-port",
@@ -940,7 +1253,12 @@ async function handleStart(options) {
     options["app-log-file"],
     "--idle-seconds",
     String(toPositiveInteger(options["idle-seconds"], 900)),
+    "--auto-switch",
+    options["auto-switch"] == null ? "0" : String(options["auto-switch"]),
+    "--auto-switch-interval",
+    String(toPositiveInteger(options["auto-switch-interval"], 15)),
   ];
+  appendSessionSourceArgs(childArgs, sessionSource);
   if (options["codex-bin"]) {
     childArgs.push("--codex-bin", options["codex-bin"]);
   }
@@ -1004,6 +1322,29 @@ async function handleSwitch(options) {
   const payload = await fetchJson(`${state.control_url}/v1/switch`, {
     method: "POST",
     body: JSON.stringify({ account: options.account }),
+  });
+  console.log(`${JSON.stringify(payload)}\n`);
+}
+
+async function handleAutoSwitch(options) {
+  if (!options["state-file"]) {
+    throw new Error("missing --state-file");
+  }
+  if (options.enabled == null) {
+    throw new Error("missing --enabled");
+  }
+
+  const state = await readStateFile(options["state-file"]);
+  if (!state || !state.control_url) {
+    throw new Error("hot session is not running");
+  }
+
+  const payload = await fetchJson(`${state.control_url}/v1/auto-switch`, {
+    method: "POST",
+    body: JSON.stringify({
+      enabled: options.enabled,
+      interval: options.interval,
+    }),
   });
   console.log(`${JSON.stringify(payload)}\n`);
 }
@@ -1104,6 +1445,9 @@ async function main() {
       break;
     case "switch":
       await handleSwitch(options);
+      break;
+    case "autoswitch":
+      await handleAutoSwitch(options);
       break;
     case "attach-start":
       await handleAttachStart(options);

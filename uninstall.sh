@@ -6,7 +6,7 @@ usage() {
 Usage: uninstall.sh [--bin-dir <dir>] [--install-dir <dir>] [--shell-rc <path>] [--force]
 
 Options:
-  --bin-dir <dir>         Where the cx symlink was installed.
+  --bin-dir <dir>         Where the cx/clisess/cxs/cxr symlinks were installed.
   --install-dir <dir>     Where codex-orbit files were installed.
   --shell-rc <path>       Shell rc file to clean up if install.sh added a PATH block.
   --force                 Remove target paths even if they are not symlinks.
@@ -161,9 +161,11 @@ done
 target_bin="$bin_dir/cx"
 target_clisess_bin="$bin_dir/clisess"
 target_cxs_bin="$bin_dir/cxs"
+target_cxr_bin="$bin_dir/cxr"
 target_internal_bin="$install_dir/bin/cx"
 target_internal_clisess_bin="$install_dir/bin/clisess"
 target_internal_cxs_bin="$install_dir/bin/cxs"
+target_internal_cxr_bin="$install_dir/bin/cxr"
 target_libexec="$install_dir/libexec"
 target_metadata="$install_dir/install-metadata"
 
@@ -179,9 +181,14 @@ if [ -L "$target_cxs_bin" ] || [ "$force" -eq 1 ]; then
   rm -f "$target_cxs_bin"
 fi
 
+if [ -L "$target_cxr_bin" ] || [ "$force" -eq 1 ]; then
+  rm -f "$target_cxr_bin"
+fi
+
 rm -f "$target_internal_bin"
 rm -f "$target_internal_clisess_bin"
 rm -f "$target_internal_cxs_bin"
+rm -f "$target_internal_cxr_bin"
 rm -f "$target_libexec/codex-orbit.zsh"
 rm -f "$target_libexec/codex-orbit-state.zsh"
 rm -f "$target_libexec/codex-orbit-admin.zsh"
@@ -191,6 +198,7 @@ rm -f "$target_libexec/codex-orbit-share.py"
 rm -f "$target_libexec/codex-orbit-daemon.py"
 rm -f "$target_libexec/codex-orbit-hot.js"
 rm -f "$target_libexec/clisess.py"
+rm -f "$target_libexec/codex-rotator.py"
 rm -f "$target_metadata"
 rmdir "$target_libexec" 2>/dev/null || true
 rmdir "$install_dir/bin" 2>/dev/null || true
@@ -202,3 +210,4 @@ say "Removed codex-orbit from $install_dir"
 say "Removed cx from $target_bin"
 say "Removed clisess from $target_clisess_bin"
 say "Removed cxs from $target_cxs_bin"
+say "Removed cxr from $target_cxr_bin"

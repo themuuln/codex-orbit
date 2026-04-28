@@ -1875,6 +1875,18 @@ _codex_write_cached_quota_snapshot() {
   mv "$temp_file" "$cache_file"
 }
 
+_codex_invalidate_quota_cache_for_account() {
+  _codex_with_lock state _codex_invalidate_quota_cache_for_account_impl "$1"
+}
+
+_codex_invalidate_quota_cache_for_account_impl() {
+  local acct="$1"
+  local cache_dir="$(_codex_quota_cache_dir)"
+
+  [[ -d "$cache_dir" ]] || return 0
+  rm -f "$cache_dir/$acct".*.tsv "$cache_dir"/routing.*.txt 2>/dev/null || true
+}
+
 _codex_write_cached_quota_routing() {
   local source="${1:-auto}"
   local cache_dir="$(_codex_quota_cache_dir)"
@@ -2000,7 +2012,7 @@ _codex_account_quota_snapshot() {
   local format="${2:-tsv}"
   local refresh="${3:-0}"
   local source="${4:-auto}"
-  local py script result="" cache_ttl=0 cached_tsv=""
+  local py script result="" cache_ttl=0 cached_tsv="" capture_file="" rc=0
 
   if [[ "$refresh" != "1" ]]; then
     cache_ttl="$(_codex_quota_cache_ttl)"
@@ -2020,10 +2032,17 @@ _codex_account_quota_snapshot() {
   script="$(_codex_quota_helper)"
   [[ -f "$script" ]] || return 1
 
-  result="$("$py" "$script" snapshot \
+  capture_file="$(mktemp "${TMPDIR:-/tmp}/codex-orbit-quota-error.XXXXXX")" || return 1
+  if ! result="$("$py" "$script" snapshot \
     --account-dir "$(_codex_account_dir "$acct")" \
     --format "$format" \
-    --source "$source")" || return 1
+    --source "$source" 2>"$capture_file")"; then
+    rc=$?
+    _codex_maybe_auto_disable_account_from_quota_error "$acct" "$capture_file" || true
+    rm -f "$capture_file"
+    return "$rc"
+  fi
+  rm -f "$capture_file"
 
   if [[ "$format" == "tsv" && -n "$result" ]]; then
     _codex_write_cached_quota_snapshot "$acct" "$source" "$result" || true
@@ -2743,6 +2762,21 @@ _codex_maybe_auto_disable_account_from_capture() {
   printf '\nAccount auto-disabled: %s\n' "$(_codex_account_display_name "$acct")" >&2
   printf 'Reason: received 402 deactivated_workspace from the Codex backend.\n' >&2
   printf 'Re-enable it after fixing workspace billing/access via cx list.\n' >&2
+  return 0
+}
+
+_codex_maybe_auto_disable_account_from_quota_error() {
+  local acct="$1"
+  local capture_file="$2"
+
+  _codex_capture_contains_deactivated_workspace "$capture_file" || return 1
+
+  _codex_disable_account "$acct" "auto:deactivated_workspace"
+  _codex_invalidate_quota_cache_for_account "$acct" || true
+  _codex_debug "account_auto_disabled account=$acct reason=deactivated_workspace source=quota"
+  printf '\nAccount auto-disabled: %s\n' "$(_codex_account_display_name "$acct")" >&2
+  printf 'Reason: quota refresh received 402 deactivated_workspace from the Codex backend.\n' >&2
+  printf 'Re-enable it after fixing workspace billing/access via cx recover %s.\n' "$acct" >&2
   return 0
 }
 

@@ -10,6 +10,25 @@ permissions:
   contents: read
 
 jobs:
+  docs:
+    name: Docs build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install docs dependencies
+        run: |
+          npm ci
+
+      - name: Build docs site
+        run: |
+          npm run build
+
   validate:
     name: Validate (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

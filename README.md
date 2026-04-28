@@ -232,22 +232,48 @@ Use the standalone `cxs` session router:
 # import existing codex-orbit accounts
 cxs import-codex
 
+# import Codex auth exports from ~/.cli-proxy-api
+cxs import-cli-proxy
+
 # inspect extracted workspace + business workspace metadata
 cxs list --provider codex
+cxs status --provider codex
 
 # run codex under a specific saved session
 cxs run codex acct_001 -- codex
 
+# print shell exports for a canonical session and create/update mirrors first
+cxs use codex acct_001 --to vibeproxy
+
 # add a non-codex CLI session (example: vibeproxy)
 cxs add vibeproxy work --home ~/.vibeproxy/work --home-var VIBEPROXY_HOME --exec vibeproxy
 cxs run vibeproxy work -- vibeproxy
+
+# inspect drift and fail CI/scripts when session state is unhealthy
+cxs doctor --strict
+
+# prune canonical sessions that now return deactivated_workspace
+cxs cleanup-deactivated --provider codex
 ```
 
 `cxs` automatically exports provider-specific workspace vars when available:
 - `CLISESS_WORKSPACE`, `CLISESS_BUSINESS_WORKSPACE`
 - `${PROVIDER}_WORKSPACE`, `${PROVIDER}_BUSINESS_WORKSPACE`
 
-For Codex sessions imported from `auth.json`, it also tries to infer the business workspace name from JWT organization claims.
+`cxs` stores its canonical vault in `~/.clisess/`:
+- `~/.clisess/sessions.json` keeps the session index
+- `~/.clisess/homes/codex/<name>/` keeps canonical Codex homes
+- `~/.clisess/homes/<provider>/<name>/` keeps provider-local mirrored homes
+
+Mirror targets are copied into provider-local homes, not symlinked. `cxs status` shows whether a session is canonical or mirrored, whether the mirror is synced or stale, and whether auth currently lives in the file, Keychain, or both.
+
+`cxs use` is the easiest activation flow: it prints shell-safe `export ...` lines for the chosen session and can create or refresh mirror targets first via `--to`.
+
+`cxs doctor` reports stale mirrors, missing homes, missing auth, missing sources, and home collisions. Use `--strict` when you want a non-zero exit code for automation.
+
+`cxs cleanup-deactivated --provider codex` removes canonical sessions and dependent mirrors when a live quota check returns `{"detail":{"code":"deactivated_workspace"}}`.
+
+For Codex sessions imported from `auth.json`, `cxs` also tries to infer the business workspace name from JWT organization claims.
 
 Move saved logins and global config in one step:
 
@@ -305,6 +331,27 @@ cx daemon launchd plist
 cx daemon launchd install
 cx daemon launchd status
 ```
+
+## Docusaurus Docs
+
+This repo now includes a Docusaurus site configured for GitHub Pages publishing.
+
+Local docs workflow:
+
+```zsh
+npm install
+npm run start
+npm run build
+npm run serve
+```
+
+Publishing setup:
+
+- site URL: `https://themuuln.github.io/codex-orbit/`
+- deploy workflow: `.github/workflows/docs.yml`
+- Pages target: GitHub Actions artifact deployment to `gh-pages`
+
+The main docs content lives under `docs/`, with site config in `docusaurus.config.js` and sidebar config in `sidebars.js`.
 
 Move only the global Codex CLI config:
 
@@ -381,6 +428,12 @@ Important paths:
 - `~/.codex-accounts/.state/cooldowns/acct_001.until`
 - `~/.codex-accounts/.state/session_<tty>_pinned_account`
 - `~/.codex-accounts/.trash/20260312003000_acct_002/`
+
+Standalone `cxs` session-router state lives under:
+
+- `~/.clisess/sessions.json`
+- `~/.clisess/homes/codex/`
+- `~/.clisess/homes/vibeproxy/`
 
 Each account home keeps its own:
 

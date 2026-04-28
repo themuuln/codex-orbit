@@ -319,6 +319,20 @@ class DaemonController:
         )
 
     def switch_account(self, account: str) -> dict[str, Any]:
+        snapshot = self.build_snapshot()
+        selected = next((row for row in snapshot["accounts"] if row["id"] == account), None)
+        if selected is None:
+            raise RuntimeError(f"unknown account: {account}")
+        if selected.get("disabled"):
+            reason = selected.get("disabled_reason") or "account is disabled"
+            raise RuntimeError(f"{account} is disabled: {reason}")
+        if selected.get("cooldown_until") is not None:
+            raise RuntimeError(f"{account} is in cooldown and cannot be activated yet")
+        if not selected.get("logged_in"):
+            raise RuntimeError(
+                f"{account} is not logged in for Codex Orbit (auth.json/keychain entry missing). Run cx login or replace login for that account."
+            )
+
         hot = read_hot_state(self.state_dir)
         if hot and hot.get("running"):
             result = self.run_cx("hot", "switch", account)

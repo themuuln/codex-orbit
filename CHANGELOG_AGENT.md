@@ -1,3 +1,19 @@
+## [2026-03-24 15:58] account-agents-symlink
+
+- **Task**: i use codex-orbit/README.md use symlink in the profiles
+- **Changes**:
+  - Added account-home preparation logic that seeds `AGENTS.md` in each Codex Orbit profile as a symlink to the base `~/.codex/AGENTS.md` when available.
+  - Backfilled missing `AGENTS.md` symlinks into the existing `~/.codex-accounts/acct_*` profiles so current sessions can inherit global guidance after restart.
+  - Documented the profile-level `AGENTS.md` symlink behavior in `README.md`.
+- **Files**:
+  - `libexec/codex-orbit.zsh`
+  - `README.md`
+  - `CHANGELOG_AGENT.md`
+- **Verification**:
+  - `zsh -n libexec/codex-orbit.zsh`
+  - Verified `/Users/ict/.codex-accounts/acct_029/AGENTS.md` is a symlink to `../../.codex/AGENTS.md`
+  - Verified an existing profile without `AGENTS.md` now has the symlink after backfill
+
 ## [2026-03-16 00:00] quota-config-prep-fix
 
 - **Task**: update the `cx quota` wrapper so it stays compatible with current Codex account config handling

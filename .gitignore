@@ -2,5 +2,9 @@
 --ephemeral
 *.pyc
 __pycache__/
+node_modules/
+.docusaurus/
+build/
 /.factory/settings.json
 /macos/CodexOrbitMenu/.build/
+/ecosystem/CodexMenuBar/.build/

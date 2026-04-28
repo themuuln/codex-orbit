@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" role="img" aria-label="Codex Orbit">
+  <rect width="1200" height="630" fill="#0f172a"/>
+  <g transform="translate(120 95)">
+    <text x="0" y="120" fill="#ffffff" font-family="Inter, Arial, sans-serif" font-size="84" font-weight="700">Codex Orbit</text>
+    <text x="0" y="200" fill="#bfd1ff" font-family="Inter, Arial, sans-serif" font-size="36">Multi-account Codex routing and session mirroring</text>
+    <circle cx="780" cy="190" r="110" fill="none" stroke="#76a4ff" stroke-width="20"/>
+    <circle cx="780" cy="75" r="28" fill="#2f6fed"/>
+    <circle cx="882" cy="234" r="20" fill="#76a4ff"/>
+    <circle cx="690" cy="278" r="18" fill="#bfd1ff"/>
+  </g>
+</svg>
